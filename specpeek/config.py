@@ -11,8 +11,15 @@
       "coverage": [
         {"from": "R", "to": "AC", "label": "没有被任何 AC 覆盖的规则"}
       ],
-      "short_name_length": 24
+      "short_name_length": 24,
+      "allow_duplicate_prefixes": ["EXT-"]
     }
+
+类别条目可带 ``short_name_column``：表格定义取短名时用哪一列，
+字符串表示表头列名，整数表示列序号（0 起，编号列为 0）；不写时
+默认取编号列之后第一个「文本列」（去掉全部编号与分隔符后仍有
+内容的列）。``allow_duplicate_prefixes``：同号异义检查的白名单，
+编号以任一前缀开头时，多处内容不同的定义不算异常。
 
 ``pattern`` 是不带捕获组的正则（会被自动加上词边界保护）。
 ``coverage`` 的语义见 README：当某一行同时出现源编号与目标类别
@@ -32,6 +39,8 @@ class Category(object):
         self.id = data["id"]
         self.name = data["name"]
         self.pattern = data["pattern"]
+        # 表格定义取短名的列：列名（str）或列序号（int），None 为默认规则。
+        self.short_name_column = data.get("short_name_column")
         self.regex = re.compile(r"(?<![A-Za-z0-9_.-])(" + data["pattern"] + r")(?![A-Za-z0-9_.-])")
 
     def find(self, text):
@@ -46,6 +55,13 @@ class Config(object):
             self.by_id[cat.id] = cat
         self.coverage = list(data.get("coverage", []))
         self.short_name_length = int(data.get("short_name_length", 24))
+        self.allow_duplicate_prefixes = [
+            str(p) for p in data.get("allow_duplicate_prefixes", [])
+        ]
+
+    def duplicate_allowed(self, number):
+        """编号的同号异义是否在白名单前缀内。"""
+        return any(number.startswith(p) for p in self.allow_duplicate_prefixes)
 
     def category_of(self, number):
         """返回编号所属类别，未匹配返回 None。"""
