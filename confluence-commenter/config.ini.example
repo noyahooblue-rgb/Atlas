@@ -5,6 +5,12 @@
 [confluence]
 # Confluence 地址，可带 context path，例如 http://host:8090/confluence
 base_url =
+# 敏感扫描的 URL 主机白名单：评论里贴这些主机的站内链接会放行，不再被
+# 「带主机名的 URL」/ IP 规则拦截。格式为 host 或 host:port，多个用逗号分隔，
+# 例如 10.0.0.1:8090,wiki.internal。base_url 的主机（含端口）永远自动在
+# 白名单内，不用填。只认 http/https；链接 query 里带 token/password/session
+# 类参数名时仍拦截。不在白名单的 URL 和 IP 照旧拦截。
+allow_url_hosts =
 # 个人访问令牌（推荐，与只读 skill 的令牌分开）。填了令牌就优先用令牌。
 token =
 # 没有令牌时用用户名 + 密码（Basic 认证）。与令牌二选一。

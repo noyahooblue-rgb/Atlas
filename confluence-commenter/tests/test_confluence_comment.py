@@ -36,10 +36,11 @@ class CliTestCase(unittest.TestCase):
 
     # ---------- 工具方法 ----------
     def make_config(self, base_url=None, token="test-token", username="", password="",
-                    extra="", limits="", deny="", encoding="utf-8"):
+                    extra="", limits="", deny="", encoding="utf-8", allow_url_hosts=""):
         lines = [
             "[confluence]",
             "base_url = {0}".format(base_url if base_url is not None else self.server.base_url),
+            "allow_url_hosts = {0}".format(allow_url_hosts),
             "token = {0}".format(token),
             "username = {0}".format(username),
             "password = {0}".format(password),
@@ -296,6 +297,120 @@ class SensitiveScanTests(CliTestCase):
                 proc = self.run_cli(["preview", "1001", "--verdict", "wrong", "--text", body])
                 self.assertEqual(proc.returncode, 0, self.combined(proc))
         self.assertEqual(self.server.post_count(), 0)
+
+
+class UrlWhitelistTests(CliTestCase):
+    """allow_url_hosts + base_url 自动白名单：站内链接放行、外部/伪装照旧拦截。"""
+
+    def preview(self, body, allow_url_hosts=""):
+        cfg = self.make_config(allow_url_hosts=allow_url_hosts)
+        return self.run_cli(["preview", "1001", "--verdict", "wrong", "--text", body],
+                            config_path=cfg)
+
+    def assert_blocked(self, proc, rule=None):
+        self.assertNotEqual(proc.returncode, 0, self.combined(proc))
+        self.assertIn("敏感", self.combined(proc))
+        if rule:
+            self.assertIn(rule, self.combined(proc))
+
+    def test_whitelist_ip_with_port_passes(self):
+        body = "站内页面 http://10.0.0.1:8090/pages/12345 的口径与代码不一致。"
+        proc = self.preview(body, allow_url_hosts="10.0.0.1:8090")
+        self.assertEqual(proc.returncode, 0, self.combined(proc))
+        self.assertEqual(self.server.post_count(), 0)
+
+    def test_whitelist_ip_without_port_passes_any_port(self):
+        # 条目不带端口时只比主机：任意端口都放行
+        body = "站内页面 http://10.0.0.1:9090/pages/12345 的口径与代码不一致。"
+        proc = self.preview(body, allow_url_hosts="10.0.0.1")
+        self.assertEqual(proc.returncode, 0, self.combined(proc))
+
+    def test_whitelist_domain_passes(self):
+        body = "站内页面 http://wiki.internal/pages/12345 的口径与代码不一致。"
+        proc = self.preview(body, allow_url_hosts="wiki.internal")
+        self.assertEqual(proc.returncode, 0, self.combined(proc))
+
+    def test_whitelist_domain_with_port_passes(self):
+        body = "站内页面 http://wiki.internal:8090/pages/12345 的口径与代码不一致。"
+        proc = self.preview(body, allow_url_hosts="wiki.internal:8090")
+        self.assertEqual(proc.returncode, 0, self.combined(proc))
+
+    def test_base_url_host_auto_whitelisted(self):
+        # 不填 allow_url_hosts：base_url 的主机（含端口）自动在白名单内
+        body = "核对依据见 {0}/pages/1001 ，页面口径与代码不一致。".format(self.server.base_url)
+        proc = self.preview(body)
+        self.assertEqual(proc.returncode, 0, self.combined(proc))
+
+    def test_base_url_other_port_blocked(self):
+        # base_url 自动条目带端口：同 IP 换个端口不放行
+        body = "站内页面 http://127.0.0.1:1/pages/1001 的口径与代码不一致。"
+        proc = self.preview(body)
+        self.assert_blocked(proc, "IPv4 地址")
+
+    def test_non_whitelist_host_blocked(self):
+        body = "站内页面 http://10.0.0.2:8090/pages/12345 的口径与代码不一致。"
+        proc = self.preview(body, allow_url_hosts="10.0.0.1:8090")
+        self.assert_blocked(proc)
+
+    def test_port_mismatch_blocked(self):
+        # 条目带端口时必须端口相等
+        body = "站内页面 http://10.0.0.1:9090/pages/12345 的口径与代码不一致。"
+        proc = self.preview(body, allow_url_hosts="10.0.0.1:8090")
+        self.assert_blocked(proc)
+
+    def test_userinfo_spoof_blocked(self):
+        # http://白名单主机@evil.com/ 的真实主机是 evil.com
+        body = "参见 http://wiki.internal@evil.example.com/pages/1 的说法与代码不一致。"
+        proc = self.preview(body, allow_url_hosts="wiki.internal")
+        self.assert_blocked(proc, "带主机名的 URL")
+
+    def test_query_value_spoof_blocked(self):
+        # 白名单主机只出现在 query 值里不算白名单
+        body = "参见 http://evil.example.com/?from=wiki.internal 的说法与代码不一致。"
+        proc = self.preview(body, allow_url_hosts="wiki.internal")
+        self.assert_blocked(proc, "带主机名的 URL")
+
+    def test_subdomain_spoof_blocked(self):
+        # 白名单主机.evil.com 不是白名单主机本身
+        body = "参见 http://wiki.internal.evil.example.com/pages/1 的说法与代码不一致。"
+        proc = self.preview(body, allow_url_hosts="wiki.internal")
+        self.assert_blocked(proc, "带主机名的 URL")
+
+    def test_ftp_scheme_not_whitelisted(self):
+        # 协议只认 http/https：ftp 即使主机在白名单也不放行
+        body = "文件在 ftp://wiki.internal/files/1 ，与代码口径不一致。"
+        proc = self.preview(body, allow_url_hosts="wiki.internal")
+        self.assert_blocked(proc, "带主机名的 URL")
+
+    def test_whitelist_query_token_param_blocked(self):
+        body = "站内页面 http://10.0.0.1:8090/pages/1?access_token=abc123 与代码不一致。"
+        proc = self.preview(body, allow_url_hosts="10.0.0.1:8090")
+        self.assert_blocked(proc)
+
+    def test_whitelist_query_session_param_blocked(self):
+        body = "站内页面 http://10.0.0.1:8090/pages/1?session=abc123 与代码不一致。"
+        proc = self.preview(body, allow_url_hosts="10.0.0.1:8090")
+        self.assert_blocked(proc, "带主机名的 URL")
+
+    def test_https_default_port_normalized(self):
+        body = "站内页面 https://wiki.internal/pages/1 的口径与代码不一致。"
+        with self.subTest(case="entry 443 matches https default"):
+            proc = self.preview(body, allow_url_hosts="wiki.internal:443")
+            self.assertEqual(proc.returncode, 0, self.combined(proc))
+        with self.subTest(case="entry 80 does not match https default 443"):
+            proc = self.preview(body, allow_url_hosts="wiki.internal:80")
+            self.assert_blocked(proc)
+
+    def test_chinese_context_internal_link_passes(self):
+        # URL 紧贴中文（无空格分隔）也要正确解析并放行
+        body = "文档口径见站内页http://10.0.0.1:8090/pages/12345，与代码不一致。"
+        proc = self.preview(body, allow_url_hosts="10.0.0.1:8090")
+        self.assertEqual(proc.returncode, 0, self.combined(proc))
+
+    def test_chinese_context_external_link_blocked(self):
+        body = "文档引用外部页http://wiki.example.com/page的说法，与代码不一致。"
+        proc = self.preview(body, allow_url_hosts="10.0.0.1:8090")
+        self.assert_blocked(proc, "带主机名的 URL")
 
 
 class CodeRefTests(CliTestCase):

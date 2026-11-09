@@ -21,6 +21,9 @@ cp config.ini.example config.ini # Windows: copy config.ini.example config.ini
 在 `config.ini` 里填：
 
 - `base_url`：Confluence 地址，可带 context path，如 `http://host:8090/confluence`
+- `allow_url_hosts`：敏感扫描的 URL 主机白名单（`host` 或 `host:port`，逗号分隔）。
+评论里贴白名单主机的站内链接会放行；`base_url` 的主机（含端口）永远自动在
+白名单内。详见下方「内容扫描」。
 - `token`：个人访问令牌（推荐，与只读令牌分开）；或 `username` + `password`（Basic 认证）
 - `verify_ssl`：内网自签证书可设 `false`
 - `console_encoding`：默认 `utf-8`，Windows 旧控制台可设 `gbk`
@@ -65,7 +68,15 @@ verdict=correct（一致不发），并扫描敏感信息（IP、带主机名的
 手机号、身份证号、银行卡号、密钥赋值、JDBC 串、私钥头），命中即拒绝并
 打码指出规则。扫描在中文语境下同样有效：数字紧贴汉字、复合键名
 （`api_key=`、`access_token:` 等）、中文键名（`密码：`、`口令=`、`密钥：`）
-与全角分隔符都会拦。落款里的 `--code-ref` 也受检：限 64 字符、只允许
+与全角分隔符都会拦。**站内链接例外**：URL 主机（含端口）命中白名单时，
+该 URL 整体放行（其中的 IP 也不触发 IP 规则）——白名单是 config 的
+`allow_url_hosts`（`host` 或 `host:port`，逗号分隔）加上 `base_url` 的
+主机（含端口，自动并入）。判定用 `urllib.parse` 解析真实主机，
+`http://白名单主机@evil.com/` 这类 userinfo 伪装、`?x=白名单主机`、
+`白名单主机.evil.com` 都不算白名单；协议只认 http/https；URL 的 query
+里带 `token`/`password`/`session` 类参数名（如 `access_token`）时，
+即使主机在白名单也照样拦截。不在白名单的 URL 和 IP 照旧拦截。
+评论保持纯文本链接即可，工具不做任何转换。落款里的 `--code-ref` 也受检：限 64 字符、只允许
 字母/数字/`.`/`-`/`_`/`/`/`:`/`@`，且最终评论全文（含落款）会再统一
 过一遍敏感扫描。
 - **防误发**：同一页面同一正文幂等拒绝（哈希只算页面 ID + 正文，

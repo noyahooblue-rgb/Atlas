@@ -29,6 +29,7 @@ import ssl
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from datetime import datetime
@@ -125,6 +126,7 @@ def load_config(path):
         "max_body_chars": 300,
         "max_body_lines": 5,
         "max_sends_per_run": 10,
+        "allow_url_hosts": [],
         "deny_spaces": [],
         "deny_page_ids": [],
         "deny_title_keywords": [],
@@ -162,6 +164,7 @@ def load_config(path):
             cfg["max_sends_per_run"] = int(get("limits", "max_sends_per_run", "10") or 10)
         except ValueError:
             raise RejectError("config.ini 中 [limits] 的数值填写不正确")
+        cfg["allow_url_hosts"] = _split_list(get("confluence", "allow_url_hosts", ""))
         cfg["deny_spaces"] = _split_list(get("deny", "spaces", ""))
         cfg["deny_page_ids"] = _split_list(get("deny", "page_ids", ""))
         cfg["deny_title_keywords"] = _split_list(get("deny", "title_keywords", ""))
@@ -360,11 +363,139 @@ def mask_secret(text):
     return text[:2] + "*" * (len(text) - 4) + text[-2:]
 
 
-def scan_sensitive(body):
-    """返回 [(规则名, 打码后的命中内容), ...]，无命中返回空列表。"""
+# ---------------------------------------------------------------- URL 主机白名单
+# 站内页面链接要能在评论里原样贴出：主机（含端口）命中白名单的 http/https
+# URL 整体放行——不触发「带主机名的 URL」规则，其中出现的 IP 也不触发
+# IPv4/IPv6 规则。白名单 = config 的 allow_url_hosts + base_url 的主机（含端口，
+# 永远自动并入）。判定用 urllib.parse 正确解析主机，防 userinfo 等伪装；
+# query 里带 token/password/session 类参数名的 URL 即使主机在白名单也不放行。
+
+_URL_SPAN_RE = re.compile(r"(?:https?|ftp)://[^\s]+")
+_URL_HOST_RULES = ("IPv4 地址", "IPv6 地址", "带主机名的 URL")
+_SENSITIVE_QUERY_WORDS = ("token", "password", "session")
+
+
+def _parse_host_entry(entry):
+    """把白名单条目（host 或 host:port，可带协议头）解析成 (主机, 端口或 None)。"""
+    entry = (entry or "").strip()
+    if not entry:
+        return None
+    candidate = entry if "://" in entry else "//" + entry
+    try:
+        parts = urllib.parse.urlsplit(candidate)
+        host = parts.hostname
+        port = parts.port
+    except ValueError:
+        return None
+    if not host:
+        return None
+    return (host.lower(), port)
+
+
+def _base_url_entry(base_url):
+    """base_url 的主机（含端口）永远自动算在白名单里，端口缺省按协议默认补齐。"""
+    if not base_url:
+        return None
+    try:
+        parts = urllib.parse.urlsplit(base_url)
+        host = parts.hostname
+        port = parts.port
+    except ValueError:
+        return None
+    if not host:
+        return None
+    if port is None:
+        port = 443 if parts.scheme == "https" else 80
+    return (host.lower(), port)
+
+
+def url_whitelist(cfg):
+    """生效的 URL 主机白名单：[(主机, 端口或 None), ...]，含 base_url 自动条目。"""
+    entries = []
+    for item in (cfg or {}).get("allow_url_hosts") or []:
+        parsed = _parse_host_entry(item)
+        if parsed:
+            entries.append(parsed)
+    base = _base_url_entry((cfg or {}).get("base_url", ""))
+    if base:
+        entries.append(base)
+    return entries
+
+
+def _query_has_sensitive_param(query):
+    """query 参数名（不分大小写）包含 token/password/session 任一词就算敏感。
+
+    参数名包含这些词也算，例如 access_token、sessionid。解析不了时保守
+    按「有问题」处理，不放行。
+    """
+    try:
+        pairs = urllib.parse.parse_qsl(query, keep_blank_values=True)
+    except ValueError:
+        return True
+    for name, _value in pairs:
+        lowered = name.lower()
+        for word in _SENSITIVE_QUERY_WORDS:
+            if word in lowered:
+                return True
+    return False
+
+
+def _url_whitelisted(url_text, whitelist):
+    """判断一个 URL 是否命中白名单。协议只认 http/https。
+
+    主机一律取 urlsplit 解析出的 hostname（userinfo 伪装如
+    http://白名单主机@evil.com/ 的真实主机是 evil.com，不会命中）；
+    端口缺省按协议默认（http 80 / https 443）归一化后比较：白名单条目
+    带端口时必须端口相等，不带端口时只比主机。
+    """
+    try:
+        parts = urllib.parse.urlsplit(url_text)
+        host = parts.hostname
+        port = parts.port
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https"):
+        return False
+    if not host:
+        return False
+    if _query_has_sensitive_param(parts.query):
+        return False
+    host = host.lower()
+    if port is None:
+        port = 443 if parts.scheme == "https" else 80
+    for entry_host, entry_port in whitelist:
+        if entry_host == host and (entry_port is None or entry_port == port):
+            return True
+    return False
+
+
+def _scrub_whitelisted_urls(text, whitelist):
+    """把命中白名单的 URL 整段替换成等长空格，供 URL/IP 三条规则扫描。
+
+    替换后原文里只剩未放行的 URL 与裸 IP，那三条规则照旧能拦；
+    其余规则仍在原文上扫，不受影响。
+    """
+    if not whitelist:
+        return text
+    chars = list(text)
+    for match in _URL_SPAN_RE.finditer(text):
+        if _url_whitelisted(match.group(0), whitelist):
+            for i in range(match.start(), match.end()):
+                chars[i] = " "
+    return "".join(chars)
+
+
+def scan_sensitive(body, whitelist=()):
+    """返回 [(规则名, 打码后的命中内容), ...]，无命中返回空列表。
+
+    whitelist 是 URL 主机白名单 [(主机, 端口或 None), ...]（见 url_whitelist）：
+    命中白名单的 URL 整体不触发「带主机名的 URL」规则，其中出现的 IP 也不
+    触发 IPv4/IPv6 规则；不在白名单的 URL 和 IP 照旧拦截。
+    """
+    scrubbed = _scrub_whitelisted_urls(body, whitelist)
     hits = []
     for name, finder in SENSITIVE_RULES:
-        found = finder(body)
+        found = finder(scrubbed if name in _URL_HOST_RULES else body)
         if found:
             hits.append((name, mask_secret(found)))
     return hits
@@ -387,7 +518,7 @@ def validate_body(body, cfg):
         )
     if "```" in body:
         raise RejectError("正文里不允许出现代码块（```），只写结论性的几句话")
-    hits = scan_sensitive(body)
+    hits = scan_sensitive(body, url_whitelist(cfg))
     if hits:
         detail = "；".join("{0}：{1}".format(name, masked) for name, masked in hits)
         raise RejectError("正文疑似包含敏感信息，已拒绝发送。命中规则 —— {0}".format(detail))
@@ -608,7 +739,7 @@ def prepare(args, cfg, client):
     final_text = build_comment_text(body, getattr(args, "code_ref", None))
     # 对最终评论全文（前缀 + 正文 + 落款）再统一扫一遍敏感信息：
     # code-ref 在落款里，单扫正文会漏掉它。
-    hits = scan_sensitive(final_text)
+    hits = scan_sensitive(final_text, url_whitelist(cfg))
     if hits:
         detail = "；".join("{0}：{1}".format(name, masked) for name, masked in hits)
         raise RejectError(
