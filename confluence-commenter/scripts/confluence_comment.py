@@ -13,7 +13,8 @@ confluence-commenter skill 的实现：核对文档与代码后，只能在页�
   status   查看已发评论的状态（未回复 / 有回复 / 页面已更新 / 评论已删除）
   log      列出本地发送日志
 
-退出码：0 成功；2 参数或规则拒绝；3 认证失败；4 网络错误；5 服务器错误。
+退出码：0 成功；2 参数或规则拒绝；3 认证失败；4 网络错误；
+5 服务器错误；6 发送结果不确定（POST 遇网络错误，未重试）。
 """
 
 import argparse
@@ -43,6 +44,7 @@ EXIT_REJECT = 2
 EXIT_AUTH = 3
 EXIT_NETWORK = 4
 EXIT_HTTP = 5
+EXIT_UNCERTAIN = 6
 
 
 class ToolError(Exception):
@@ -64,9 +66,15 @@ class AuthError(ToolError):
 
 
 class NetworkError(ToolError):
-    """网络错误：最多重试 1 次后仍失败。"""
+    """网络错误：GET 最多重试 1 次后仍失败。"""
 
     exit_code = EXIT_NETWORK
+
+
+class UncertainError(ToolError):
+    """POST 遇网络错误：评论可能已发到服务器，结果不确定，绝不自动重发。"""
+
+    exit_code = EXIT_UNCERTAIN
 
 
 class HttpError(ToolError):
@@ -211,15 +219,20 @@ class ConfluenceClient:
         self._opener = urllib.request.build_opener(*handlers)
 
     def _request(self, method, path, payload=None):
-        """发一次请求。认证失败立即抛 AuthError（不重试）；网络错误最多重试 1 次。"""
+        """发请求。认证失败立即抛 AuthError（不重试）。
+
+        GET 网络错误最多重试 1 次；POST 一律不重试——第一次可能已经成功、
+        只是响应丢了，重试会重复发评论。POST 遇网络错误抛 UncertainError。
+        """
         url = self.base_url + path
         data = None
         headers = {"Authorization": self._auth, "Accept": "application/json"}
         if payload is not None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             headers["Content-Type"] = "application/json; charset=utf-8"
+        attempts = 1 if method == "POST" else 2  # 首次 +（仅 GET）最多重试 1 次
         last_error = None
-        for _attempt in range(2):  # 首次 + 最多重试 1 次
+        for _attempt in range(attempts):
             request = urllib.request.Request(url, data=data, headers=headers, method=method)
             try:
                 with self._opener.open(request, timeout=self.timeout) as response:
@@ -231,7 +244,11 @@ class ConfluenceClient:
                     raise AuthError("认证失败（HTTP {0}），已停止，不会重试。请检查令牌/账号。".format(exc.code))
                 raise HttpError(exc.code, "服务器返回 HTTP {0}：{1}".format(exc.code, exc.reason))
             except (urllib.error.URLError, OSError) as exc:
-                last_error = exc  # 网络错误，允许重试 1 次
+                last_error = exc  # 网络错误
+        if method == "POST":
+            raise UncertainError(
+                "发送结果不确定：提交评论时遇到网络错误（{0}）。"
+                "评论可能已经发到服务器上，请先用 status 或到页面上核实，不要直接重发。".format(last_error))
         raise NetworkError("网络错误（已重试 1 次仍失败）：{0}".format(last_error))
 
     @staticmethod
@@ -310,6 +327,11 @@ def _regex_finder(pattern, flags=0):
 
 
 # 每条规则：(规则名, 查找函数)。命中任一条就拒绝发送。
+# 注意：数字类规则不用 \b 作边界——Python 3 里汉字属于 \w，数字紧贴汉字时
+# 没有词边界会漏拦；统一改用「前后不是数字」的前后瞻。
+# 密钥赋值规则：键名前不要求词边界（汉字紧贴键名也要拦），只要求键名前面
+# 不是 ASCII 字母/数字/下划线（避免 monkey: 这类英文单词内部误命中）；
+# 覆盖复合键名与中文键名，分隔符含全角 = 与 ：。
 SENSITIVE_RULES = [
     ("IPv4 地址", _find_ipv4),
     ("IPv6 地址", _regex_finder(
@@ -318,10 +340,14 @@ SENSITIVE_RULES = [
         r"|::[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*")),
     ("带主机名的 URL", _regex_finder(r"(?:https?|ftp)://[^\s]+")),
     ("邮箱", _regex_finder(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")),
-    ("手机号", _regex_finder(r"\b1[3-9]\d{9}\b")),
-    ("身份证号", _regex_finder(r"\b\d{17}[\dXx]\b")),
-    ("银行卡号", _regex_finder(r"\b\d{16,19}\b")),
-    ("密钥赋值", _regex_finder(r"\b(?:password|passwd|pwd|token|secret|key)\s*[:=]\s*\S+", re.IGNORECASE)),
+    ("手机号", _regex_finder(r"(?<!\d)1[3-9]\d{9}(?!\d)")),
+    ("身份证号", _regex_finder(r"(?<!\d)\d{17}[\dXx](?!\d)")),
+    ("银行卡号", _regex_finder(r"(?<!\d)\d{16,19}(?!\d)")),
+    ("密钥赋值", _regex_finder(
+        r"(?<![A-Za-z0-9_])(?:api_key|apikey|access_token|accesstoken|secret_key"
+        r"|client_secret|private_key|password|passwd|pwd|token|secret|key"
+        r"|密码|口令|密钥)\s*[=＝:：]\s*\S+",
+        re.IGNORECASE)),
     ("JDBC 连接串", _regex_finder(r"jdbc:[a-z0-9]+:", re.IGNORECASE)),
     ("私钥头", _regex_finder(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----")),
 ]
@@ -373,6 +399,24 @@ def validate_verdict(verdict):
         raise RejectError("verdict=correct 表示与代码一致：一致的页面不需要评论，已拒绝")
     if verdict not in ("wrong", "partial"):
         raise RejectError("verdict 只能是 wrong 或 partial，收到的是：{0}".format(verdict))
+
+
+CODE_REF_MAX_LEN = 64
+# @ 兼容「分支@提交号」这种已有写法（仓库既有测试与用法都在用），其余只允许
+# 字母、数字、点、横线、下划线、斜杠、冒号。
+CODE_REF_CHARS = re.compile(r"[A-Za-z0-9.\-/_:@]+")
+
+
+def validate_code_ref(code_ref):
+    """校验 --code-ref：它会原样写进最终评论落款，必须限长且只含安全字符。"""
+    if not code_ref:
+        return
+    if len(code_ref) > CODE_REF_MAX_LEN:
+        raise RejectError(
+            "--code-ref 太长：{0} 个字符，上限 {1} 个字符".format(len(code_ref), CODE_REF_MAX_LEN))
+    if not CODE_REF_CHARS.fullmatch(code_ref):
+        raise RejectError(
+            "--code-ref 含有非法字符（只允许字母、数字、点、横线、下划线、斜杠、冒号、@）：{0}".format(code_ref))
 
 
 def build_comment_text(body, code_ref):
@@ -557,14 +601,28 @@ def prepare(args, cfg, client):
     """取页面、跑全部检查、生成最终评论。返回准备结果字典；不合格抛 RejectError。"""
     validate_verdict(args.verdict)
     body = validate_body(read_body_arg(args), cfg)
+    validate_code_ref(getattr(args, "code_ref", None))
     page_id = parse_page_ref(args.page)
     page = client.get_page(page_id)
     check_deny(page, page_id, cfg)
     final_text = build_comment_text(body, getattr(args, "code_ref", None))
-    digest = content_hash(final_text)
+    # 对最终评论全文（前缀 + 正文 + 落款）再统一扫一遍敏感信息：
+    # code-ref 在落款里，单扫正文会漏掉它。
+    hits = scan_sensitive(final_text)
+    if hits:
+        detail = "；".join("{0}：{1}".format(name, masked) for name, masked in hits)
+        raise RejectError(
+            "最终评论（含落款中的代码版本）疑似包含敏感信息，已拒绝发送。命中规则 —— {0}".format(detail))
+    # 幂等口径：对「页面 ID + 正文」做哈希。换一个 code-ref 不能绕过幂等；
+    # 发送结果不确定（status=uncertain）的记录也写了同一个哈希，同样算已发。
+    digest = content_hash("{0}\n{1}".format(page_id, body))
     records = read_log(cfg)
     for record in records:
         if record.get("page_id") == str(page_id) and record.get("content_hash") == digest:
+            if record.get("status") == "uncertain":
+                raise RejectError(
+                    "同样的评论已有一条发送结果不确定的记录（幂等拦截）：页面 {0}。"
+                    "请先用 status 或到页面上核实，不要直接重发".format(page_id))
             raise RejectError("同样的评论已经发过（幂等拦截）：页面 {0}，评论 ID {1}".format(
                 page_id, record.get("comment_id")))
     if run_send_count(cfg) >= cfg["max_sends_per_run"]:
@@ -573,6 +631,8 @@ def prepare(args, cfg, client):
     page_records = [r for r in records if r.get("page_id") == str(page_id)]
     unresolved = None
     for record in page_records:
+        if not record.get("comment_id"):
+            continue  # 发送结果不确定的记录没有评论 ID，无法查状态；同内容已由幂等拦截
         if is_unresolved(client, record):
             unresolved = record  # 取最近一条未结评论
     if unresolved is not None:
@@ -639,21 +699,30 @@ def cmd_send(args, cfg):
     }
     if prepared["parent_id"]:
         payload["ancestors"] = [{"id": prepared["parent_id"]}]
-    result = client.post_comment(payload)
-    comment_id = str(result.get("id", ""))
-    if not comment_id:
-        raise ToolError("服务器未返回评论 ID，无法确认发送结果")
     record = {
         "time": datetime.now().astimezone().isoformat(timespec="seconds"),
         "page_id": prepared["page_id"],
         "title": page.get("title", ""),
         "space": ((page.get("space") or {}).get("key") or ""),
         "page_version": ((page.get("version") or {}).get("number")),
-        "comment_id": comment_id,
+        "comment_id": "",
         "content_hash": prepared["content_hash"],
         "verdict": args.verdict,
         "code_ref": getattr(args, "code_ref", None) or "",
     }
+    try:
+        result = client.post_comment(payload)
+    except UncertainError as exc:
+        # 结果不确定也记一行日志：幂等要把它算进去，防止核实前重复发送。
+        record["status"] = "uncertain"
+        append_log(cfg, record)
+        bump_run_count(cfg)
+        print("错误：{0}".format(exc), file=sys.stderr)
+        return EXIT_UNCERTAIN
+    comment_id = str(result.get("id", ""))
+    if not comment_id:
+        raise ToolError("服务器未返回评论 ID，无法确认发送结果")
+    record["comment_id"] = comment_id
     append_log(cfg, record)
     bump_run_count(cfg)
     print("已发送：页面《{0}》（ID {1}）评论 ID {2}".format(
@@ -671,6 +740,11 @@ def cmd_status(args, cfg):
         print("（没有符合条件的发送记录）")
         return EXIT_OK
     for record in records:
+        if record.get("status") == "uncertain":
+            print("页面 {0}《{1}》：发送结果不确定（{2} 发送时网络错误，未确认评论 ID），"
+                  "请到页面上核实".format(
+                      record.get("page_id"), record.get("title", ""), record.get("time", "")))
+            continue
         info = comment_status(client, record)
         line = "页面 {0}《{1}》 评论 {2}（verdict={3}，发送于 {4}，发送时页面版本 v{5}）：{6}".format(
             record.get("page_id"), record.get("title", ""), record.get("comment_id"),
@@ -690,9 +764,12 @@ def cmd_log(args, cfg):
         print("（暂无发送记录，日志文件：{0}）".format(log_path(cfg)))
         return EXIT_OK
     for record in records:
-        print("{0} 页面 {1}《{2}》 评论 {3} verdict={4} code-ref={5}".format(
+        line = "{0} 页面 {1}《{2}》 评论 {3} verdict={4} code-ref={5}".format(
             record.get("time", ""), record.get("page_id"), record.get("title", ""),
-            record.get("comment_id"), record.get("verdict", ""), record.get("code_ref", "")))
+            record.get("comment_id"), record.get("verdict", ""), record.get("code_ref", ""))
+        if record.get("status") == "uncertain":
+            line += "（发送结果不确定，未确认评论 ID）"
+        print(line)
     return EXIT_OK
 
 

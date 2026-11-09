@@ -33,6 +33,7 @@ def make_state(context_path=""):
         "username": "tester",
         "password": "test-pass",
         "force_login_page": False,
+        "drop_post_response": False,  # True 时 POST 已处理但断开连接不回响应
         "pages": {
             "1001": {
                 "id": "1001", "type": "page", "title": "订单流程说明",
@@ -164,6 +165,12 @@ def make_handler(state):
                     "version": {"number": 1},
                 }
                 state["comments"][comment_id] = comment
+                if state["drop_post_response"]:
+                    # 模拟「第一次 POST 其实已成功、只是响应丢了」：
+                    # 评论已存下，但直接断开连接，不回任何响应。
+                    self.close_connection = True
+                    self.connection.close()
+                    return
                 self._send_json(200, {"id": comment_id, "type": "comment"})
                 return
             self._send_json(404, {"message": "Unknown path"})

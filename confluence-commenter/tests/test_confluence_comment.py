@@ -258,6 +258,92 @@ class SensitiveScanTests(CliTestCase):
                 self.assertEqual(proc.returncode, 0, self.combined(proc))
         self.assertEqual(self.server.post_count(), 0)
 
+    # 中文语境：敏感串紧贴汉字前后（\b 边界失效的场景），必须全部拦截。
+    # (规则名, 命中正文, 原始敏感串)
+    CHINESE_CASES = [
+        ("手机号", "请联系13812345678确认", "13812345678"),
+        ("身份证号", "证件号11010119900307123X有误", "11010119900307123X"),
+        ("银行卡号", "卡号6222021234567890123已失效", "6222021234567890123"),
+        ("密钥赋值", "配置中password=abc123有误", "abc123"),
+        ("密钥赋值", "令牌token:xyz789未同步", "xyz789"),
+        ("密钥赋值", "password：abc123", "abc123"),
+        ("密钥赋值", "api_key=abcd1234", "abcd1234"),
+        ("密钥赋值", "文中写的密码：abc123与代码不一致", "abc123"),
+        ("密钥赋值", "配置里的口令=abc123与代码不一致", "abc123"),
+        ("密钥赋值", "文中写的密钥：abc123与代码不一致", "abc123"),
+        ("密钥赋值", "access_token = abcd1234 与代码不一致", "abcd1234"),
+        ("密钥赋值", "文中写的client_secret：abcd1234与代码不一致", "abcd1234"),
+    ]
+
+    def test_chinese_context_hits(self):
+        for rule, body, raw in self.CHINESE_CASES:
+            with self.subTest(rule=rule, body=body):
+                proc = self.run_cli(["preview", "1001", "--verdict", "wrong", "--text", body])
+                self.assertNotEqual(proc.returncode, 0, self.combined(proc))
+                text = self.combined(proc)
+                self.assertIn(rule, text)
+                self.assertNotIn(raw, text)  # 命中内容打码，原始串不得原样出现
+        self.assertEqual(self.server.post_count(), 0)
+
+    def test_chinese_ordinary_numbers_no_false_positive(self):
+        bodies = [
+            "共 3 处不一致，其余部分与代码实现一致。",
+            "文档写的是版本 12，代码里已经是版本 13，口径不一致。",
+            "全文共 12345 字，引用的是 2026 年发布的规范，与代码不一致。",
+        ]
+        for body in bodies:
+            with self.subTest(body=body):
+                proc = self.run_cli(["preview", "1001", "--verdict", "wrong", "--text", body])
+                self.assertEqual(proc.returncode, 0, self.combined(proc))
+        self.assertEqual(self.server.post_count(), 0)
+
+
+class CodeRefTests(CliTestCase):
+    def test_code_ref_with_sensitive_content_rejected(self):
+        # code-ref 本身在字符白名单内，但拼进落款后命中密钥赋值规则
+        proc = self.run_cli(["preview", "1001", "--verdict", "wrong", "--text", GOOD_BODY,
+                             "--code-ref", "token:xyz789"])
+        self.assertNotEqual(proc.returncode, 0)
+        text = self.combined(proc)
+        self.assertIn("敏感", text)
+        self.assertIn("密钥赋值", text)
+        self.assertEqual(self.server.post_count(), 0)
+
+    def test_code_ref_with_ip_rejected(self):
+        proc = self.run_cli(["preview", "1001", "--verdict", "wrong", "--text", GOOD_BODY,
+                             "--code-ref", "192.168.1.10"])
+        self.assertNotEqual(proc.returncode, 0)
+        text = self.combined(proc)
+        self.assertIn("敏感", text)
+        self.assertIn("IPv4", text)
+        self.assertEqual(self.server.post_count(), 0)
+
+    def test_code_ref_too_long_rejected(self):
+        proc = self.run_cli(["preview", "1001", "--verdict", "wrong", "--text", GOOD_BODY,
+                             "--code-ref", "a" * 65])
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("太长", self.combined(proc))
+        self.assertEqual(self.server.post_count(), 0)
+
+    def test_code_ref_illegal_chars_rejected(self):
+        for ref in ("v1.0 beta", 'v1"rc"', "版本1.0"):
+            with self.subTest(ref=ref):
+                proc = self.run_cli(["preview", "1001", "--verdict", "wrong",
+                                     "--text", GOOD_BODY, "--code-ref", ref])
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("非法字符", self.combined(proc))
+        self.assertEqual(self.server.post_count(), 0)
+
+    def test_code_ref_valid_passes(self):
+        ref = "v1.2.3-hotfix/main:abc123"
+        proc = self.run_cli(["send", "1001", "--verdict", "wrong", "--text", GOOD_BODY,
+                             "--code-ref", ref, "--yes"])
+        self.assertEqual(proc.returncode, 0, self.combined(proc))
+        self.assertEqual(self.server.post_count(), 1)
+        records = self.read_log()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["code_ref"], ref)
+
 
 class DenyTests(CliTestCase):
     def test_deny_space(self):
@@ -289,6 +375,15 @@ class FollowupTests(CliTestCase):
     def test_idempotent_same_content_rejected(self):
         self.send_ok()
         proc = self.run_cli(["send", "1001", "--verdict", "wrong", "--text", GOOD_BODY, "--yes"])
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("已经发过", self.combined(proc))
+        self.assertEqual(self.server.post_count(), 1)
+
+    def test_idempotent_ignores_code_ref_change(self):
+        # 幂等只算「页面 ID + 正文」：换一个 code-ref 不能绕过
+        self.send_ok(extra_args=["--code-ref", "v1.0.0"])
+        proc = self.run_cli(["send", "1001", "--verdict", "wrong", "--text", GOOD_BODY,
+                             "--code-ref", "v2.0.0", "--yes"])
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("已经发过", self.combined(proc))
         self.assertEqual(self.server.post_count(), 1)
@@ -365,6 +460,48 @@ class LimitTests(CliTestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("上限", self.combined(proc))
         self.assertEqual(self.server.post_count(), 2)
+
+
+class UncertainSendTests(CliTestCase):
+    def test_post_network_error_uncertain_exit6(self):
+        # 服务器已收到并存下评论，但响应在路上丢了：POST 不重试，退出码 6
+        self.server.state["drop_post_response"] = True
+        proc = self.run_cli(["send", "1001", "--verdict", "wrong",
+                             "--text", GOOD_BODY, "--yes"])
+        self.assertEqual(proc.returncode, 6, self.combined(proc))
+        self.assertIn("不确定", self.combined(proc))
+        self.assertEqual(self.server.post_count(), 1)  # 只发了 1 次，没有重试
+        records = self.read_log()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].get("status"), "uncertain")
+        self.assertFalse(records[0].get("comment_id"))  # 不写评论 ID
+        # status 能正常展示这条不确定记录（不查服务器、不报错）
+        proc = self.run_cli(["status"])
+        self.assertEqual(proc.returncode, 0, self.combined(proc))
+        self.assertIn("不确定", self.out(proc))
+        # 幂等把 uncertain 记录算进去：同样内容再发被拒，且不会再 POST
+        proc = self.run_cli(["send", "1001", "--verdict", "wrong",
+                             "--text", GOOD_BODY, "--yes"])
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("不确定", self.combined(proc))
+        self.assertEqual(self.server.post_count(), 1)
+
+
+class ChineseContextTests(CliTestCase):
+    def test_chinese_title_and_body_roundtrip(self):
+        self.server.add_page("4001", "支付回调处理说明", version=2)
+        body = "文档说回调失败自动重试三次，代码里只重试一次，这一点不一致。"
+        proc = self.run_cli(["preview", "4001", "--verdict", "wrong", "--text", body])
+        self.assertEqual(proc.returncode, 0, self.combined(proc))
+        self.assertIn("支付回调处理说明", self.out(proc))
+        self.send_ok(page="4001", body=body)
+        records = self.read_log()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["title"], "支付回调处理说明")
+        proc = self.run_cli(["status", "--page", "4001"])
+        self.assertEqual(proc.returncode, 0, self.combined(proc))
+        self.assertIn("支付回调处理说明", self.out(proc))
+        self.assertIn("未回复", self.out(proc))
 
 
 class ContextPathTests(unittest.TestCase):
