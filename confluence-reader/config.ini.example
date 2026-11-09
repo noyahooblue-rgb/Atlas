@@ -1,0 +1,25 @@
+[confluence]
+base_url =
+username =
+password =
+token =
+cookie =
+auth_mode =
+verify_ssl =
+ca_file =
+proxy =
+timeout =
+download_timeout =
+workers =
+output_dir =
+max_attachment_mb =
+skip_extensions =
+max_print_chars =
+excel_preview_rows =
+excel_max_rows =
+pdf_max_pages =
+max_doc_images =
+min_image_px =
+legacy_office =
+max_recursive_pages =
+console_encoding =
