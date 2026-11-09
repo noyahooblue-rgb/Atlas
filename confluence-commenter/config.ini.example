@@ -1,0 +1,41 @@
+# confluence-commenter 配置模板
+# 使用方法：把本文件复制为 config.ini，再填写。config.ini 已被 .gitignore 忽略，不会进仓库。
+# 所有敏感项默认留空；令牌与密码只填在本机 config.ini 里，不要提交、不要发给任何人。
+
+[confluence]
+# Confluence 地址，可带 context path，例如 http://host:8090/confluence
+base_url =
+# 个人访问令牌（推荐，与只读 skill 的令牌分开）。填了令牌就优先用令牌。
+token =
+# 没有令牌时用用户名 + 密码（Basic 认证）。与令牌二选一。
+username =
+password =
+# 内网自签证书可设为 false；默认 true
+verify_ssl = true
+# 是否走系统代理。内网地址通常应设为 false（默认就不走）
+allow_system_proxy = false
+# 单次请求超时（秒）
+timeout = 10
+# 控制台输出编码：utf-8 或 gbk（Windows 旧控制台可设 gbk）
+console_encoding = utf-8
+
+[limits]
+# 评论正文长度上限（字符数）
+max_body_chars = 300
+# 评论正文行数上限
+max_body_lines = 5
+# 单次运行最多发送条数
+max_sends_per_run = 10
+
+[deny]
+# 拒绝清单：命中任何一项就拒绝发评论。多个值用逗号分隔。
+# 空间 key，例如 SECRET,HR
+spaces =
+# 页面 ID，例如 123456,234567
+page_ids =
+# 页面标题关键词，例如 机密,内部结算
+title_keywords =
+
+[paths]
+# 发送日志目录（相对路径按 skill 根目录计算），默认 logs
+log_dir = logs
