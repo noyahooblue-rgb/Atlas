@@ -147,6 +147,7 @@ def load_config(path):
         "console_encoding": "utf-8",
         "allow_spaces": [],
         "allow_parent_ids": [],
+        "allow_url_hosts": [],
         "max_body_bytes": 200 * 1024,
         "max_writes_per_run": 10,
         "deny_spaces": [],
@@ -182,6 +183,7 @@ def load_config(path):
             cfg["timeout"] = 10.0
         cfg["allow_spaces"] = _split_list(get("pages", "allow_spaces", ""))
         cfg["allow_parent_ids"] = _split_list(get("pages", "allow_parent_ids", ""))
+        cfg["allow_url_hosts"] = _split_list(get("pages", "allow_url_hosts", ""))
         try:
             cfg["max_body_bytes"] = int(get("limits", "max_body_bytes", str(200 * 1024)) or 200 * 1024)
             cfg["max_writes_per_run"] = int(get("limits", "max_writes_per_run", "10") or 10)
@@ -220,6 +222,17 @@ def configure_console(encoding):
 # 密钥赋值规则：键名前不要求词边界（汉字紧贴键名也要拦），只要求键名前面
 # 不是 ASCII 字母/数字/下划线（避免 monkey: 这类英文单词内部误命中）；
 # 覆盖复合键名与中文键名，分隔符含全角 = 与 ：。
+#
+# URL 主机白名单（与 commenter 同一口径）：config 的 allow_url_hosts
+# （host 或 host:port，可多个）加上 base_url 的主机（含端口，永远自动
+# 并入）。扫描前先逐个解析文本里的 URL：协议只认 http/https，用
+# urlsplit 取真实 hostname 与归一化端口（缺省按 80/443）——
+# http://白名单@evil.com/ 这类 userinfo 伪装解析出的主机是 evil.com，
+# 不会命中白名单。主机（及端口，条目带端口时必须相等；条目不带端口
+# 只比主机）在白名单内时，该 URL 整体不触发「带主机名的 URL」规则，
+# URL 里出现的 IP 也不触发 IPv4/IPv6 规则；但该 URL 的 query 参数名
+# 只要包含 token/password/session（不区分大小写，access_token 这类
+# 包含式命名也算），照样拦截。不在白名单的 URL 与 IP 照旧拦截。
 
 
 def _valid_ipv4(text):
@@ -232,11 +245,161 @@ def _valid_ipv4(text):
     return True
 
 
-def _find_ipv4(text):
+def _in_spans(pos, spans):
+    return any(start <= pos < end for start, end in spans)
+
+
+def _find_ipv4(text, spans=()):
     for match in re.finditer(r"(?:\d{1,3}\.){3}\d{1,3}", text):
+        if _in_spans(match.start(), spans):
+            continue  # 白名单 URL 内部出现的 IP 不触发本规则
         if _valid_ipv4(match.group(0)):
             return match.group(0)
     return None
+
+
+_IPV6_PATTERN = (
+    r"(?:[0-9A-Fa-f]{1,4}:){3,7}[0-9A-Fa-f]{1,4}"
+    r"|[0-9A-Fa-f]{1,4}::[0-9A-Fa-f:]*"
+    r"|::[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*")
+
+
+def _find_ipv6(text, spans=()):
+    for match in re.finditer(_IPV6_PATTERN, text):
+        if _in_spans(match.start(), spans):
+            continue
+        return match.group(0)
+    return None
+
+
+_URL_SCAN_RE = re.compile(r"(?:https?|ftp)://[^\s]+")
+
+
+def _find_url(text, entries=()):
+    for match in _URL_SCAN_RE.finditer(text):
+        if _url_is_exempt(match.group(0), entries):
+            continue
+        return match.group(0)
+    return None
+
+
+def _normalize_host(host):
+    host = (host or "").strip().lower()
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    return host
+
+
+def _parse_host_entry(entry):
+    """把白名单条目解析成 (主机, 端口|None)：'host'、'host:port'，
+    IPv6 可写 '[::1]:8090' 或 '::1'。解析不了返回 None。"""
+    text = str(entry or "").strip()
+    if not text:
+        return None
+    if text.startswith("["):
+        end = text.find("]")
+        if end < 0:
+            return None
+        host = text[1:end]
+        rest = text[end + 1:]
+        if rest.startswith(":") and rest[1:].isdigit():
+            return (_normalize_host(host), int(rest[1:]))
+        if rest:
+            return None
+        return (_normalize_host(host), None)
+    if text.count(":") == 1:
+        host, _, port = text.partition(":")
+        if port.isdigit():
+            return (_normalize_host(host), int(port))
+    return (_normalize_host(text), None)
+
+
+def _default_port(scheme):
+    return 443 if scheme == "https" else 80
+
+
+def _url_host_port(url):
+    """用 urlsplit 解析 URL，返回 (协议, 主机, 归一化端口)；
+    协议不是 http/https、没有主机或端口非法时返回 None。"""
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return None
+    scheme = (parts.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        return None  # 白名单只认 http/https，ftp 等协议永不豁免
+    host = parts.hostname
+    if not host:
+        return None
+    try:
+        port = parts.port
+    except ValueError:
+        return None
+    if port is None:
+        port = _default_port(scheme)
+    return (scheme, _normalize_host(host), port)
+
+
+_SECRET_QUERY_WORDS = ("token", "password", "session")
+
+
+def _query_has_secret_param(url):
+    """URL 的 query 参数名包含 token/password/session 时返回 True
+    （access_token 这类包含式命名也算）。解析不了按有问题处理，不豁免。"""
+    try:
+        query = urllib.parse.urlsplit(url).query
+    except ValueError:
+        return True
+    for name, _value in urllib.parse.parse_qsl(query, keep_blank_values=True):
+        lowered = name.lower()
+        if any(word in lowered for word in _SECRET_QUERY_WORDS):
+            return True
+    return False
+
+
+def _url_is_exempt(url, entries):
+    """URL 是否因主机在白名单内而豁免「带主机名的 URL」/IP 规则。"""
+    if not entries:
+        return False
+    parsed = _url_host_port(url)
+    if parsed is None:
+        return False
+    _scheme, host, port = parsed
+    if _query_has_secret_param(url):
+        return False
+    for entry_host, entry_port in entries:
+        if entry_host == host and (entry_port is None or entry_port == port):
+            return True
+    return False
+
+
+def _exempt_url_spans(text, entries):
+    """文本中被白名单豁免的 URL 所占的字符区间（供 IP 规则跳过）。"""
+    spans = []
+    if not entries:
+        return spans
+    for match in _URL_SCAN_RE.finditer(text):
+        if _url_is_exempt(match.group(0), entries):
+            spans.append((match.start(), match.end()))
+    return spans
+
+
+def allowed_url_entries(cfg):
+    """本工具生效的 URL 主机白名单：config 的 allow_url_hosts
+    加上 base_url 的主机:端口（永远自动并入）。"""
+    entries = []
+    if cfg:
+        for item in cfg.get("allow_url_hosts") or []:
+            parsed = _parse_host_entry(item)
+            if parsed:
+                entries.append(parsed)
+        base = _url_host_port(cfg.get("base_url") or "")
+        if base:
+            _scheme, host, port = base
+            entry = (host, port)
+            if entry not in entries:
+                entries.append(entry)
+    return entries
 
 
 def _regex_finder(pattern, flags=0):
@@ -250,12 +413,9 @@ def _regex_finder(pattern, flags=0):
 
 
 SENSITIVE_RULES = [
-    ("IPv4 地址", _find_ipv4),
-    ("IPv6 地址", _regex_finder(
-        r"(?:[0-9A-Fa-f]{1,4}:){3,7}[0-9A-Fa-f]{1,4}"
-        r"|[0-9A-Fa-f]{1,4}::[0-9A-Fa-f:]*"
-        r"|::[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*")),
-    ("带主机名的 URL", _regex_finder(r"(?:https?|ftp)://[^\s]+")),
+    ("IPv4 地址", _find_ipv4),  # 实际调用时另传白名单 URL 区间，见 scan_sensitive
+    ("IPv6 地址", _regex_finder(_IPV6_PATTERN)),  # 同上，实际走 _find_ipv6
+    ("带主机名的 URL", _regex_finder(r"(?:https?|ftp)://[^\s]+")),  # 同上，实际走 _find_url
     ("邮箱", _regex_finder(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")),
     ("手机号", _regex_finder(r"(?<!\d)1[3-9]\d{9}(?!\d)")),
     ("身份证号", _regex_finder(r"(?<!\d)\d{17}[\dXx](?!\d)")),
@@ -277,19 +437,42 @@ def mask_secret(text):
     return text[:2] + "*" * (len(text) - 4) + text[-2:]
 
 
-def scan_sensitive(body):
-    """返回 [(规则名, 打码后的命中内容), ...]，无命中返回空列表。"""
+def _scan_with_entries(body, entries):
+    """entries 是已解析的 (主机, 端口|None) 白名单条目列表。"""
+    spans = _exempt_url_spans(body, entries)
     hits = []
     for name, finder in SENSITIVE_RULES:
-        found = finder(body)
+        if name == "IPv4 地址":
+            found = _find_ipv4(body, spans)
+        elif name == "IPv6 地址":
+            found = _find_ipv6(body, spans)
+        elif name == "带主机名的 URL":
+            found = _find_url(body, entries)
+        else:
+            found = finder(body)
         if found:
             hits.append((name, mask_secret(found)))
     return hits
 
 
-def scan_or_reject(text, what):
+def scan_sensitive(body, allow_url_hosts=None):
+    """返回 [(规则名, 打码后的命中内容), ...]，无命中返回空列表。
+
+    allow_url_hosts 是额外的 URL 主机白名单条目（'host' 或 'host:port'
+    字符串），只用于计算白名单豁免；不传则不豁免任何 URL/IP。
+    （base_url 的自动并入在 scan_or_reject 里经 allowed_url_entries 处理。）
+    """
+    entries = []
+    for item in allow_url_hosts or []:
+        parsed = _parse_host_entry(item)
+        if parsed:
+            entries.append(parsed)
+    return _scan_with_entries(body, entries)
+
+
+def scan_or_reject(text, what, cfg=None):
     """对将要写入的内容统一扫描，命中即拒绝。"""
-    hits = scan_sensitive(text)
+    hits = _scan_with_entries(text, allowed_url_entries(cfg))
     if hits:
         detail = "；".join("{0}：{1}".format(name, masked) for name, masked in hits)
         raise RejectError(
@@ -443,37 +626,364 @@ _FENCE_RE = re.compile(r"^```\s*([A-Za-z0-9_+-]*)\s*$")
 _HR_RE = re.compile(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$")
 _LIST_ITEM_RE = re.compile(r"^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$")
 _TABLE_SEP_RE = re.compile(r"^\s*\|?[\s:|-]+\|?\s*$")
-_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 _CODE_SPAN_RE = re.compile(r"`([^`]+)`")
-_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
+
+# 链接（含图片 src）只允许三类目标：http/https、以 / 开头的站内相对
+# 路径、以 # 开头的锚点。其他协议（javascript、data、vbscript、file 等）
+# 一律不生成链接，只输出转义后的纯文本并给出警告。判断前会把目标反复做
+# HTML 实体解码与百分号解码、去掉空白与控制字符，防止 &#106;avascript:、
+# java%73cript: 这类编码绕过；协议判断不区分大小写。
+_SCHEME_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.\-]*):")
 
 
-def _convert_inline(text, warnings):
-    """行内格式转换：先把图片、行内代码摘出来保护，转义后再拼回去。"""
+def _parse_link_target(text, open_idx):
+    """解析链接语法中 ]( 之后的目标部分。
+
+    支持两种写法：普通写法按括号配对确定结尾（URL 内的成对括号保留，
+    如 /a_(b)）；<URL> 包裹写法可含空格与括号。text 里 <> 可能已被
+    HTML 转义成 &lt; &gt;，两种都认。
+    返回 (目标字符串, 闭合括号之后的位置)；解析失败返回 (None, open_idx)。
+    """
+    n = len(text)
+    j = open_idx + 1
+    while j < n and text[j] in " \t":
+        j += 1
+    angle = None
+    if j < n and text[j] == "<":
+        angle = (j + 1, ">")
+    elif text.startswith("&lt;", j):
+        angle = (j + 4, "&gt;")
+    if angle is not None:
+        start, closer = angle
+        end = text.find(closer, start)
+        if end < 0:
+            return None, open_idx
+        dest = text[start:end]
+        k = end + len(closer)
+        while k < n and text[k] in " \t":
+            k += 1
+        if k < n and text[k] == ")" and dest.strip():
+            return dest, k + 1
+        return None, open_idx
+    depth = 1
+    start = j
+    while j < n:
+        ch = text[j]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                dest = text[start:j].strip()
+                if not dest:
+                    return None, open_idx
+                return dest, j + 1
+        elif ch in " \t" and depth == 1:
+            # 未包裹的目标在空白处结束，其后必须直接闭合（不支持 title 语法）
+            dest = text[start:j]
+            k = j
+            while k < n and text[k] in " \t":
+                k += 1
+            if k < n and text[k] == ")" and dest:
+                return dest, k + 1
+            return None, open_idx
+        j += 1
+    return None, open_idx
+
+
+def _probe_url(dest):
+    """把链接目标反复解码成用于协议判断的样子：
+    HTML 实体解码 + 百分号解码（最多 3 轮），再去掉空白与控制字符。"""
+    probe = dest
+    for _round in range(3):
+        decoded = urllib.parse.unquote(html.unescape(probe))
+        if decoded == probe:
+            break
+        probe = decoded
+    return re.sub(r"[\s\x00-\x1f\x7f]+", "", probe)
+
+
+def _link_protocol_ok(dest):
+    """链接目标是否属于允许的三类（http/https、/ 开头、# 开头）。"""
+    probe = _probe_url(dest)
+    match = _SCHEME_RE.match(probe)
+    if match:
+        return match.group(1).lower() in ("http", "https")
+    if probe.startswith("//"):
+        return False  # 协议相对地址指向其他主机，不算站内相对路径
+    return probe.startswith("/") or probe.startswith("#")
+
+
+_LINK_PROTOCOL_HINT = "仅允许 http/https、以 / 开头的站内相对路径、以 # 开头的锚点"
+
+
+class InternalPageLinkResolver(object):
+    """把指向 base_url 下页面的链接解析成 Confluence 原生页面链接。
+
+    识别三种地址形式（base_url 带 context path 时，先按 base_url 的
+    路径前缀剥离后再匹配；相对地址写了完整前缀或不写都认）：
+      /pages/viewpage.action?pageId=数字
+      /display/空间KEY/标题
+      /spaces/空间KEY/pages/数字/...
+    解析时用 GET 取目标页的标题与空间。目标页取不到（404/无权限）时
+    返回 miss，调用方退回普通链接并给出警告，不中断转换。
+    本工具自身的 deny 清单管的是「写入目标」，不影响给页面做链接；
+    目标页在 reader 排除空间里也照常生成链接（链接不读正文）。
+    """
+
+    _VIEWPAGE_PATH = "/pages/viewpage.action"
+    _DISPLAY_RE = re.compile(r"^/display/([^/]+)/(.+)$")
+    _SPACES_RE = re.compile(r"^/spaces/([^/]+)/pages/(\d+)(?:/.*)?$")
+
+    def __init__(self, client, base_url):
+        self._client = client
+        base = None
+        if base_url:
+            try:
+                base = urllib.parse.urlsplit(base_url)
+            except ValueError:
+                base = None
+        self._base_scheme = (base.scheme or "").lower() if base else ""
+        self._base_host = _normalize_host(base.hostname) if base else ""
+        self._base_port = None
+        if base:
+            try:
+                self._base_port = base.port
+            except ValueError:
+                self._base_port = None
+            if self._base_port is None and self._base_scheme in ("http", "https"):
+                self._base_port = _default_port(self._base_scheme)
+        self._base_path = (base.path or "").rstrip("/") if base else ""
+        self.warnings = []
+        self.resolved = []  # [(原网址, 目标页标题, 目标页ID)]，供预览逐条列出
+        self._cache = {}
+        self._listed = set()
+
+    def _candidate_rests(self, path):
+        rests = []
+        if self._base_path:
+            if path == self._base_path:
+                rests.append("/")
+            elif path.startswith(self._base_path + "/"):
+                rests.append(path[len(self._base_path):])
+        if path not in rests:
+            rests.append(path)
+        return rests
+
+    def _match_form(self, parts):
+        """命中站内页面形式时返回 (方式, 页面ID或None, 空间或None, 标题或None)。"""
+        for rest in self._candidate_rests(parts.path or ""):
+            if rest == self._VIEWPAGE_PATH:
+                ids = urllib.parse.parse_qs(parts.query).get("pageId") or []
+                if ids and ids[0].isdigit():
+                    return ("id", ids[0], None, None)
+            match = self._DISPLAY_RE.match(rest)
+            if match:
+                return ("title", None,
+                        urllib.parse.unquote(match.group(1)),
+                        urllib.parse.unquote_plus(match.group(2)))
+            match = self._SPACES_RE.match(rest)
+            if match:
+                return ("id", match.group(2), urllib.parse.unquote(match.group(1)), None)
+        return None
+
+    def _safe_get_page(self, page_id):
+        try:
+            return self._client.get_page(page_id)
+        except (HttpError, AuthError):
+            return None  # 404 由 get_page 返回 None；403（无权限）同样按取不到处理
+
+    def resolve(self, raw_url):
+        """返回 (状态, 数据)：状态 ok 时数据为
+        {"page_id", "title", "space_key"}；miss 表示地址是站内页面形式
+        但目标页取不到；not_internal 表示不是站内页面地址。"""
+        if raw_url in self._cache:
+            return self._cache[raw_url]
+        result = self._resolve(raw_url)
+        self._cache[raw_url] = result
+        return result
+
+    def _resolve(self, raw_url):
+        url = (raw_url or "").strip()
+        if not url:
+            return ("not_internal", None)
+        scheme_match = _SCHEME_RE.match(url)
+        if scheme_match:
+            if scheme_match.group(1).lower() not in ("http", "https"):
+                return ("not_internal", None)
+            parsed_url = _url_host_port(url)
+            if parsed_url is None:
+                return ("not_internal", None)
+            _scheme, host, port = parsed_url
+            if not self._base_host or host != self._base_host or port != self._base_port:
+                return ("not_internal", None)  # 不是本站地址
+            try:
+                parts = urllib.parse.urlsplit(url)
+            except ValueError:
+                return ("not_internal", None)
+        elif url.startswith("/") and not url.startswith("//"):
+            try:
+                parts = urllib.parse.urlsplit(url)
+            except ValueError:
+                return ("not_internal", None)
+        else:
+            return ("not_internal", None)
+        form = self._match_form(parts)
+        if form is None:
+            return ("not_internal", None)
+        kind, page_id, space_key, title = form
+        page = None
+        if kind == "id":
+            page = self._safe_get_page(page_id)
+        else:
+            try:
+                found = self._client.find_by_title(space_key, title)
+            except (HttpError, AuthError):
+                found = []
+            if found:
+                page = found[0]
+                page_id = str(page.get("id") or "")
+        if page is None or not page_id:
+            self.warnings.append(
+                "站内链接目标页取不到（不存在或无权限），已退回普通链接：{0}".format(raw_url))
+            return ("miss", None)
+        data = {
+            "page_id": str(page_id),
+            "title": page.get("title") or title or "",
+            "space_key": page_space_key(page) or space_key or "",
+        }
+        if raw_url not in self._listed:
+            self._listed.add(raw_url)
+            self.resolved.append((raw_url, data["title"], data["page_id"]))
+        return ("ok", data)
+
+
+def _ac_link_storage(data, label_text):
+    """生成 Confluence 原生页面链接（ac:link）。
+    链接文字为空、或与目标页标题相同时不写 plain-text-body，
+    页面上直接显示目标页标题（与编辑器粘贴网址的效果一致）。"""
+    body = ""
+    label = (label_text or "").strip()
+    if label and label != data["title"]:
+        safe = label.replace("]]>", "]]]]><![CDATA[>")
+        body = "<ac:plain-text-body><![CDATA[{0}]]></ac:plain-text-body>".format(safe)
+    return (
+        '<ac:link><ri:page ri:space-key="{0}" ri:content-title="{1}"/>{2}</ac:link>'.format(
+            html.escape(data["space_key"], quote=True),
+            html.escape(data["title"], quote=True),
+            body))
+
+
+def _stash_images(text, warnings):
+    """把图片语法摘出来保护：图片不渲染（本工具不上传附件），
+    一律按原文输出；src 先过与链接相同的协议白名单，
+    命中禁用协议时给出协议警告。返回 (处理后的文本, 原文列表)。"""
     images = []
+    out = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text.startswith("![", i):
+            close = text.find("]", i + 2)
+            if close >= 0 and close + 1 < n and text[close + 1] == "(":
+                dest, end = _parse_link_target(text, close + 1)
+                if dest is not None:
+                    source = text[i:end]
+                    if _link_protocol_ok(dest):
+                        warnings.append("图片语法不支持，已按原文输出：{0}".format(source))
+                    else:
+                        warnings.append(
+                            "图片地址协议不允许（{0}），已按原文输出：{1}".format(
+                                _LINK_PROTOCOL_HINT, source))
+                    images.append(source)
+                    out.append("\x00I{0}\x00".format(len(images) - 1))
+                    i = end
+                    continue
+        out.append(text[i])
+        i += 1
+    return "".join(out), images
 
-    def stash_image(match):
-        warnings.append("图片语法不支持，已按原文输出：{0}".format(match.group(0)))
-        images.append(match.group(0))
-        return "\x00I{0}\x00".format(len(images) - 1)
 
+def _render_one_link(label, dest, source, warnings, resolver, link_stash):
+    """渲染一个链接：label/dest/source 都是已 HTML 转义后的文本。
+    协议不允许时只输出转义后的纯文本（即 source 本身）并警告；
+    命中站内页面链接时生成 ac:link（先摘存保护，避免后续行内
+    格式正则碰到 CDATA 内容）。"""
+    if not _link_protocol_ok(dest):
+        warnings.append(
+            "链接协议不允许（{0}），已按原文输出：{1}".format(
+                _LINK_PROTOCOL_HINT, html.unescape(source)))
+        return source
+    if resolver is not None:
+        raw_dest = html.unescape(dest)
+        status, data = resolver.resolve(raw_dest)
+        if status == "ok":
+            label_text = html.unescape(label)
+            if label_text == raw_dest:
+                label_text = ""  # 链接文字就是网址本身，视为没写文字，显示目标页标题
+            link_stash.append(_ac_link_storage(data, label_text))
+            return "\x00L{0}\x00".format(len(link_stash) - 1)
+    return '<a href="{0}">{1}</a>'.format(dest, label)
+
+
+def _render_links(text, warnings, resolver, link_stash):
+    """扫描 [文字](目标) 并逐个渲染；目标按括号配对解析，
+    支持 <目标> 包裹写法。"""
+    out = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] == "[":
+            close = text.find("]", i + 1)
+            if close > i + 1 and close + 1 < n and text[close + 1] == "(":
+                dest, end = _parse_link_target(text, close + 1)
+                if dest is not None:
+                    out.append(_render_one_link(
+                        text[i + 1:close], dest, text[i:end],
+                        warnings, resolver, link_stash))
+                    i = end
+                    continue
+        out.append(text[i])
+        i += 1
+    return "".join(out)
+
+
+_BARE_URL_RE = re.compile(r"^<?([^\s<>]+)>?$")
+
+
+def _try_bare_url_line(line, resolver, warnings):
+    """正文中单独一行的裸网址：命中站内页面时转成 ac:link（包在段落里）。
+    不是站内页面、或没有 resolver 时返回 None，按普通段落处理。"""
+    if resolver is None:
+        return None
+    match = _BARE_URL_RE.match(line.strip())
+    if not match:
+        return None
+    url = match.group(1)
+    if not _link_protocol_ok(url):
+        return None
+    status, data = resolver.resolve(url)
+    if status != "ok":
+        return None
+    return "<p>{0}</p>".format(_ac_link_storage(data, ""))
+
+
+def _convert_inline(text, warnings, resolver=None):
+    """行内格式转换：先把图片、行内代码摘出来保护，转义后再拼回去。"""
+    text, images = _stash_images(text, warnings)
     codes = []
 
     def stash_code(match):
         codes.append(match.group(1))
         return "\x00C{0}\x00".format(len(codes) - 1)
 
-    text = _IMAGE_RE.sub(stash_image, text)
     text = _CODE_SPAN_RE.sub(stash_code, text)
     if "~~" in text:
         warnings.append("删除线语法不支持，已按原文输出")
     text = html.escape(text, quote=True)
 
-    def render_link(match):
-        label, url = match.group(1), match.group(2)
-        return '<a href="{0}">{1}</a>'.format(url, label)
-
-    text = _LINK_RE.sub(render_link, text)
+    link_stash = []
+    text = _render_links(text, warnings, resolver, link_stash)
     text = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", text)
     text = re.sub(r"\*([^*\n]+)\*", r"<em>\1</em>", text)
     text = re.sub(r"(?<![A-Za-z0-9])_([^_]+)_(?![A-Za-z0-9])", r"<em>\1</em>", text)
@@ -481,10 +991,14 @@ def _convert_inline(text, warnings):
     def restore_code(match):
         return "<code>{0}</code>".format(html.escape(codes[int(match.group(1))], quote=True))
 
+    def restore_link(match):
+        return link_stash[int(match.group(1))]
+
     def restore_image(match):
         return html.escape(images[int(match.group(1))], quote=True)
 
     text = re.sub(r"\x00C(\d+)\x00", restore_code, text)
+    text = re.sub(r"\x00L(\d+)\x00", restore_link, text)
     text = re.sub(r"\x00I(\d+)\x00", restore_image, text)
     return text
 
@@ -518,14 +1032,14 @@ def _list_tree(items, start, indent):
     return block, i
 
 
-def _render_list_block(block, warnings):
+def _render_list_block(block, warnings, resolver=None):
     tag = "ol" if block.ordered else "ul"
     parts = ["<{0}>".format(tag)]
     for text, children in block.items:
         parts.append("<li>")
-        parts.append(_convert_inline(text, warnings))
+        parts.append(_convert_inline(text, warnings, resolver))
         for child in children:
-            parts.append(_render_list_block(child, warnings))
+            parts.append(_render_list_block(child, warnings, resolver))
         parts.append("</li>")
     parts.append("</{0}>".format(tag))
     return "".join(parts)
@@ -570,8 +1084,12 @@ def _code_macro(lang, code):
     )
 
 
-def markdown_to_storage(md_text):
-    """Markdown 转 Confluence storage 格式。返回 (storage 字符串, warnings 列表)。"""
+def markdown_to_storage(md_text, resolver=None):
+    """Markdown 转 Confluence storage 格式。返回 (storage 字符串, warnings 列表)。
+
+    resolver 是 InternalPageLinkResolver（可空）：给定时，指向本站
+    页面的链接与单独一行的裸网址会转成 ac:link 原生页面链接。
+    """
     warnings = []
     lines = md_text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     blocks = []
@@ -598,10 +1116,10 @@ def markdown_to_storage(md_text):
             level = len(heading.group(1))
             text = heading.group(2)
             if level <= 4:
-                blocks.append("<h{0}>{1}</h{0}>".format(level, _convert_inline(text, warnings)))
+                blocks.append("<h{0}>{1}</h{0}>".format(level, _convert_inline(text, warnings, resolver)))
             else:
                 warnings.append("只支持 1–4 级标题，{0} 级标题已按原文输出".format(level))
-                blocks.append("<p>{0}</p>".format(_convert_inline(line, warnings)))
+                blocks.append("<p>{0}</p>".format(_convert_inline(line, warnings, resolver)))
             i += 1
             continue
         if _HR_RE.match(line):
@@ -620,12 +1138,12 @@ def markdown_to_storage(md_text):
                 i += 1
             parts = ["<table><tbody><tr>"]
             for cell in header:
-                parts.append("<th>{0}</th>".format(_convert_inline(cell, warnings)))
+                parts.append("<th>{0}</th>".format(_convert_inline(cell, warnings, resolver)))
             parts.append("</tr>")
             for row in rows:
                 parts.append("<tr>")
                 for cell in row:
-                    parts.append("<td>{0}</td>".format(_convert_inline(cell, warnings)))
+                    parts.append("<td>{0}</td>".format(_convert_inline(cell, warnings, resolver)))
                 parts.append("</tr>")
             parts.append("</tbody></table>")
             blocks.append("".join(parts))
@@ -636,7 +1154,7 @@ def markdown_to_storage(md_text):
                 quote_lines.append(re.sub(r"^\s*>\s?", "", lines[i]))
                 i += 1
             inner = "\n".join(quote_lines)
-            blocks.append("<blockquote><p>{0}</p></blockquote>".format(_convert_inline(inner, warnings)))
+            blocks.append("<blockquote><p>{0}</p></blockquote>".format(_convert_inline(inner, warnings, resolver)))
             continue
         if _is_list_item(line):
             items = []
@@ -649,7 +1167,7 @@ def markdown_to_storage(md_text):
             pos = 0
             while pos < len(items):
                 block, pos = _list_tree(items, pos, items[pos][0])
-                blocks.append(_render_list_block(block, warnings))
+                blocks.append(_render_list_block(block, warnings, resolver))
             continue
         # 普通段落：直到空行或下一个块级语法
         para_lines = [line]
@@ -663,7 +1181,14 @@ def markdown_to_storage(md_text):
                 break
             para_lines.append(nxt)
             i += 1
-        blocks.append("<p>{0}</p>".format(_convert_inline("\n".join(para_lines), warnings)))
+        if len(para_lines) == 1:
+            bare = _try_bare_url_line(para_lines[0], resolver, warnings)
+            if bare is not None:
+                blocks.append(bare)
+                continue
+        blocks.append("<p>{0}</p>".format(_convert_inline("\n".join(para_lines), warnings, resolver)))
+    if resolver is not None and resolver.warnings:
+        warnings.extend(resolver.warnings)
     return "".join(blocks), warnings
 
 
@@ -677,6 +1202,41 @@ _CODE_MACRO_RE = re.compile(
     r'<ac:structured-macro[^>]*ac:name="code"[^>]*>(.*?)</ac:structured-macro>', re.S)
 _CODE_LANG_RE = re.compile(r'<ac:parameter ac:name="language">(.*?)</ac:parameter>', re.S)
 _CODE_BODY_RE = re.compile(r"<ac:plain-text-body><!\[CDATA\[(.*)\]\]></ac:plain-text-body>", re.S)
+
+_AC_LINK_RE = re.compile(r"<ac:link>(.*?)</ac:link>", re.S)
+_RI_PAGE_RE = re.compile(r"<ri:page\b[^>]*?/>|<ri:page\b[^>]*?>", re.S)
+_RI_ATTR_RE = re.compile(r'([\w:.-]+)="([^"]*)"')
+
+
+def _stash_ac_links(storage):
+    """把 ac:link 页面链接先摘出来，换成普通 <a> 占位再交给 HTML 解析：
+    CDATA 链接正文不能直接过 HTML 解析器。还原地址统一用
+    /display/空间KEY/标题（标题做百分号编码），链接文字缺省为目标页
+    标题——与 markdown_to_storage 的生成口径互为往返。
+    没有 ri:page 目标的 ac:link（附件链接等）原样保留，不处理。"""
+
+    def repl(match):
+        inner = match.group(1)
+        page_match = _RI_PAGE_RE.search(inner)
+        if not page_match:
+            return match.group(0)
+        attrs = dict(_RI_ATTR_RE.findall(page_match.group(0)))
+        title = html.unescape(attrs.get("ri:content-title", ""))
+        space_key = html.unescape(attrs.get("ri:space-key", ""))
+        if not title:
+            return match.group(0)
+        body_match = _CODE_BODY_RE.search(inner)
+        label = ""
+        if body_match:
+            label = body_match.group(1).replace("]]]]><![CDATA[>", "]]>")
+        label = label or title
+        url = "/display/{0}/{1}".format(
+            urllib.parse.quote(space_key, safe=""),
+            urllib.parse.quote(title, safe=""))
+        return '<a href="{0}">{1}</a>'.format(
+            html.escape(url, quote=True), html.escape(label, quote=True))
+
+    return _AC_LINK_RE.sub(repl, storage or "")
 
 _VOID_TAGS = {"br", "hr"}
 
@@ -804,6 +1364,10 @@ def _render_blocks(children, code_store):
         tag = child.tag
         if tag == "p":
             blocks.append(_render_inline(child.children))
+        elif tag == "a":
+            # 块级单独出现的链接（ac:link 还原占位可能落在段落外）
+            blocks.append("[{0}]({1})".format(
+                _render_inline(child.children), child.attrs.get("href", "")))
         elif tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
             level = int(tag[1])
             blocks.append("{0} {1}".format("#" * level, _render_inline(child.children)))
@@ -853,6 +1417,7 @@ def storage_to_markdown(storage):
         return '<pre data-coderef="{0}"></pre>'.format(len(code_store) - 1)
 
     prepared = _CODE_MACRO_RE.sub(stash_macro, storage or "")
+    prepared = _stash_ac_links(prepared)
     builder = _TreeBuilder()
     builder.feed(prepared)
     builder.close()
@@ -1050,6 +1615,15 @@ def _print_warnings(warnings):
         print("警告：{0}".format(warning), file=sys.stderr)
 
 
+def _print_internal_links(internal_links):
+    """预览时逐条列出识别出的站内页面链接：原网址 → 目标页标题（ID）。"""
+    if not internal_links:
+        return
+    print("识别出的站内页面链接（将生成 Confluence 原生页面链接）：")
+    for raw_url, title, page_id in internal_links:
+        print("  {0} → 《{1}》（ID {2}）".format(raw_url, title, page_id))
+
+
 # ---------------------------------------------------------------- 命令：check
 
 
@@ -1063,6 +1637,10 @@ def cmd_check(args, cfg):
         print("AI 专用空间（allow_spaces）：{0}".format("、".join(cfg["allow_spaces"])))
     else:
         print("注意：allow_spaces 未配置，create / update 会被拒绝")
+    entries = allowed_url_entries(cfg)
+    if entries:
+        shown = ["{0}:{1}".format(h, p) if p is not None else h for h, p in entries]
+        print("URL 主机白名单（allow_url_hosts + base_url 主机）：{0}".format("、".join(shown)))
     return EXIT_OK
 
 
@@ -1090,13 +1668,14 @@ def prepare_create(args, cfg, client):
         raise RejectError(
             "父页面 {0} 不在 allow_parent_ids 白名单里，拒绝新建".format(parent_id))
     md_text = read_body_file(args.file, cfg)
-    scan_or_reject(title + "\n" + BANNER_TEXT + "\n" + md_text, "标题、正文与横幅")
+    scan_or_reject(title + "\n" + BANNER_TEXT + "\n" + md_text, "标题、正文与横幅", cfg)
     existing = client.find_by_title(parent_space, title)
     if existing:
         raise RejectError(
             "同一空间 {0} 内已有同名页面《{1}》（ID {2}），拒绝新建".format(
                 parent_space, title, existing[0].get("id")))
-    storage, warnings = markdown_to_storage(md_text)
+    resolver = InternalPageLinkResolver(client, cfg["base_url"])
+    storage, warnings = markdown_to_storage(md_text, resolver)
     return {
         "parent_id": str(parent_id),
         "parent": parent,
@@ -1105,6 +1684,7 @@ def prepare_create(args, cfg, client):
         "md_text": md_text,
         "storage": BANNER_STORAGE + storage,
         "warnings": warnings,
+        "internal_links": resolver.resolved,
     }
 
 
@@ -1118,6 +1698,7 @@ def cmd_create(args, cfg):
             parent.get("title", ""), prepared["parent_id"], prepared["parent_space"]))
         print("新页面标题：《{0}》".format(prepared["title"]))
         print("将自动添加标签：{0}、{1}".format(LABEL_AUTHORED, LABEL_PENDING))
+        _print_internal_links(prepared.get("internal_links") or [])
         print("将要写入的正文（storage 格式，顶部已自动加 AI 横幅）：")
         print("----")
         print(prepared["storage"])
@@ -1236,8 +1817,9 @@ def prepare_update(args, cfg, client):
             "页面已有 {0} 标签，已被批准并冻结，AI 不得再改（条件 5e）".format(LABEL_APPROVED))
     md_text = read_body_file(args.file, cfg)
     title = page.get("title") or ""
-    scan_or_reject(title + "\n" + BANNER_TEXT + "\n" + md_text, "标题、正文与横幅")
-    storage, warnings = markdown_to_storage(md_text)
+    scan_or_reject(title + "\n" + BANNER_TEXT + "\n" + md_text, "标题、正文与横幅", cfg)
+    resolver = InternalPageLinkResolver(client, cfg["base_url"])
+    storage, warnings = markdown_to_storage(md_text, resolver)
     old_md = storage_to_markdown(page_storage(page))
     new_storage = BANNER_STORAGE + storage
     new_md = storage_to_markdown(new_storage)
@@ -1257,6 +1839,7 @@ def prepare_update(args, cfg, client):
         "storage": new_storage,
         "warnings": warnings,
         "diff": diff,
+        "internal_links": resolver.resolved,
     }
 
 
@@ -1268,6 +1851,7 @@ def cmd_update(args, cfg):
         print("页面：《{0}》（ID {1}，空间 {2}，当前版本 v{3}）".format(
             prepared["title"], prepared["page_id"], prepared["space"],
             prepared["current_version"]))
+        _print_internal_links(prepared.get("internal_links") or [])
         print("正文差异（服务器当前正文 -> 待提交正文）：")
         print("----")
         if prepared["diff"]:

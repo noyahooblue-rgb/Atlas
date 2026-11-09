@@ -33,6 +33,10 @@ cp config.ini.example config.ini # Windows: copy config.ini.example config.ini
   覆盖这些空间
 - `[pages] allow_parent_ids`：可选的父页面白名单。配了就要求父页面
   同时在名单里；没配则 allow_spaces 内任意父页面下都能新建（含空间首页）
+- `[pages] allow_url_hosts`：可选，敏感扫描的 URL 主机白名单
+  （`host` 或 `host:port`，可多个）。白名单内的 URL 及其中的 IP
+  不会被扫描拦截；base_url 的主机（含端口）永远自动在白名单内。
+  详见「安全说明」的 URL 主机白名单一条
 - `[limits]`：正文大小上限（默认 204800 字节 = 200KB）、单次运行
   写操作上限（默认 10 次）
 - `[deny]`：拒绝清单——空间 key、页面 ID、标题关键词，命中就拒绝
@@ -96,6 +100,25 @@ cp config.ini.example config.ini # Windows: copy config.ini.example config.ini
   并给出警告。`pull` 做反向转换，本工具生成的页面可往返一致
   （Markdown→storage→Markdown 内容等价；列表缩进等会规范化为
   每级 2 空格）。
+- **链接协议白名单**：Markdown 链接与图片 src 只允许三类目标——
+  http/https、以 `/` 开头的站内相对路径、以 `#` 开头的锚点。其他
+  协议（javascript、data、vbscript、file 等，不区分大小写，含前后
+  空白、百分号编码 `java%73cript:`、HTML 实体编码 `&#106;avascript:`
+  这类绕过写法）一律不生成链接，只输出转义后的纯文本并给出警告。
+  URL 内的括号按配对解析（`/a_(b)` 不会被截断），也支持
+  `<URL>` 包裹写法。
+- **站内页面链接转原生链接**：Markdown 链接、以及正文中单独一行的
+  裸网址，只要指向本站（base_url）页面就识别，支持
+  `/pages/viewpage.action?pageId=数字`、`/display/空间KEY/标题`、
+  `/spaces/空间KEY/pages/数字/...` 三种形式（base_url 带 context
+  path 时按其路径之后的部分匹配）。识别后用 GET 取目标页标题与
+  空间，生成 `<ac:link>` 原生页面链接——写了链接文字的用作正文，
+  没写的显示目标页标题；目标页取不到（404/无权限）时退回普通
+  `<a href>` 并给出警告，不中断。预览输出会逐条列出识别出的站内
+  链接（原网址 → 目标页标题（ID））。`pull` 时 ac:link 还原成
+  `[标题](/display/空间KEY/标题)` 形式的 Markdown 链接，往返一致。
+  给页面做链接不读目标页正文，本工具的拒绝清单管的是写入目标，
+  不限制链接目标（目标在其他空间也照常生成链接）。
 
 ## 安全说明
 
@@ -110,9 +133,20 @@ cp config.ini.example config.ini # Windows: copy config.ini.example config.ini
   confluence-commenter 返工后同一套规则：IP、带主机名的 URL、邮箱、
   手机号、身份证号、银行卡号、密钥赋值、JDBC 串、私钥头；中文语境
   下同样有效——数字紧贴汉字、复合键名、中文键名、全角分隔符都会
-  拦），命中即拒绝并打码指出规则。这也意味着正文里写完整的
-  `http://`/`https://` 链接会被拦下；站内链接请用相对路径
-  （如 `[文字](/pages/123)`）。
+  拦），命中即拒绝并打码指出规则。
+- **URL 主机白名单**：config 的 `[pages] allow_url_hosts`（`host`
+  或 `host:port`，可多个）配置扫描放行的主机；**base_url 的主机
+  （含端口）永远自动在白名单内**。扫描时逐个用标准库解析 URL 的
+  真实主机与端口（缺省端口按 http 80 / https 443 归一化）：主机
+  （条目带端口时端口还须相等；条目不带端口只比主机）在白名单内
+  时，该 URL 整体不算「带主机名的 URL」，其中出现的 IP 也不触发
+  IP 规则——站内链接（哪怕是 IP:端口形式的完整网址）因此能正常
+  写入。不在白名单的 URL 与 IP 照旧拦截。两点例外与防伪装：
+  白名单 URL 的 query 参数名只要包含 token/password/session
+  （如 `access_token`）照样拦截；`http://白名单@evil.com/`
+  （userinfo 伪装）、`http://evil.com/?x=白名单`、
+  `http://白名单.evil.com/` 都按真实主机判断，不算白名单；
+  协议只认 http/https（ftp 永不放行）。
 - **本地状态**：登记表与日志都在 `logs/` 下（已被 .gitignore 忽略）。
   登记表是判断“页面是不是本工具建的”的依据，不要手工伪造；
   换机器使用前先迁移 `logs/` 并核对。
@@ -131,7 +165,11 @@ allow_spaces 空间规则（含补充修订的 5 类空间用例）、新建全�
 update 的 5a–5e 逐条拒绝与正例、diff 预览、409、POST/PUT 断线后的
 退出码 6、敏感扫描中文语境、Markdown 每种语法与往返一致、status
 五种状态、pull、写操作上限、context path、gbk 输出、源码写请求
-纪律与 Python 3.8 语法自检。
+纪律与 Python 3.8 语法自检；以及返工与追加项：链接协议白名单
+（禁用协议与编码绕过、图片 src）、URL 括号配对与 <> 包裹解析、
+扫描 URL 主机白名单（放行/端口不符/三类伪装/带 token 参数拦截）、
+站内页面链接转 ac:link（三种地址形式、404 退回、裸网址、预览
+清单、pull 往返）。
 
 ## 已知限制
 

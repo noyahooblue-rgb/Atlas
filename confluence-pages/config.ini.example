@@ -24,6 +24,12 @@ console_encoding = utf-8
 # 为空时 create 和 update 一律拒绝（提示“未配置 AI 专用空间”）。
 # 所有新建、修改、status、pull 都只覆盖这些空间。
 allow_spaces =
+# 敏感扫描的 URL 主机白名单（host 或 host:port，逗号分隔，可多个）。
+# 正文里带主机名的 URL、IP 地址默认一律拦截；主机（含端口）在白名单内时，
+# 该 URL 整体放行、其中的 IP 也不拦（但 query 参数名带 token/password/
+# session 的照样拦）。base_url 的主机（含端口）永远自动在白名单内，不用填。
+# 伪装地址（http://白名单@evil.com/ 等）按真实主机判断，不会放行。
+allow_url_hosts =
 # 父页面白名单（页面 ID，逗号分隔）。
 # 配了：父页面还必须在这个名单里才能新建；
 # 没配：allow_spaces 内任意父页面下都能新建，包括空间首页。

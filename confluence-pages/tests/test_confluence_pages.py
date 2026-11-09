@@ -37,8 +37,8 @@ class CliTestCase(unittest.TestCase):
 
     # ---------- 工具方法 ----------
     def make_config(self, base_url=None, token="test-token", username="", password="",
-                    allow_spaces="AI", allow_parent_ids="", limits="", deny="",
-                    encoding="utf-8"):
+                    allow_spaces="AI", allow_parent_ids="", allow_url_hosts="",
+                    limits="", deny="", encoding="utf-8"):
         lines = [
             "[confluence]",
             "base_url = {0}".format(base_url if base_url is not None else self.server.base_url),
@@ -49,6 +49,7 @@ class CliTestCase(unittest.TestCase):
             "[pages]",
             "allow_spaces = {0}".format(allow_spaces),
             "allow_parent_ids = {0}".format(allow_parent_ids),
+            "allow_url_hosts = {0}".format(allow_url_hosts),
             "[limits]",
             limits,
             "[deny]",
@@ -837,6 +838,393 @@ class SourceDisciplineTests(unittest.TestCase):
     def test_python38_syntax(self):
         import ast
         ast.parse(self._source(), filename="confluence_pages.py", feature_version=(3, 8))
+
+
+class LinkProtocolTests(unittest.TestCase):
+    """返工 M1：Markdown 链接与图片 src 的协议白名单。
+
+    只允许 http/https、以 / 开头的站内相对路径、以 # 开头的锚点；
+    其他协议一律不生成链接，只输出转义后的纯文本并给出警告。
+    """
+
+    FORBIDDEN = [
+        "[链接](javascript:alert(1))",
+        "[链接](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)",
+        "[链接](vbscript:msgbox)",
+        "[链接](file:///etc/passwd)",
+        "[链接](JaVaScRiPt:alert(1))",        # 不区分大小写
+        "[链接](  javascript:alert(1))",      # 协议前空白
+        "[链接](ftp://example.com/x)",        # ftp 也不在允许三类里
+    ]
+
+    def test_forbidden_protocols_rejected(self):
+        for md in self.FORBIDDEN:
+            with self.subTest(md=md):
+                storage, warnings = cp.markdown_to_storage(md)
+                self.assertNotIn("<a href", storage)
+                self.assertNotIn("href=", storage)
+                self.assertIn(md.replace("  javascript", "  javascript"), storage.replace("&amp;", "&"))
+                self.assertTrue(any("协议不允许" in w for w in warnings), warnings)
+
+    def test_encoded_bypass_rejected(self):
+        for md in ("[链接](java%73cript:alert(1))",       # 百分号编码
+                   "[链接](&#106;avascript:alert(1))",    # HTML 实体编码（十进制）
+                   "[链接](&#x6a;avascript:alert(1))",    # HTML 实体编码（十六进制）
+                   "[链接](java&#115;cript:alert(1))"):
+            with self.subTest(md=md):
+                storage, warnings = cp.markdown_to_storage(md)
+                self.assertNotIn("<a href", storage)
+                self.assertTrue(any("协议不允许" in w for w in warnings), warnings)
+
+    def test_allowed_protocols_render_links(self):
+        cases = [
+            ("[链接](http://example.com/a)", '<a href="http://example.com/a">链接</a>'),
+            ("[链接](https://example.com/a)", '<a href="https://example.com/a">链接</a>'),
+            ("[链接](/pages/123)", '<a href="/pages/123">链接</a>'),
+            ("[链接](#小节)", '<a href="#小节">链接</a>'),
+        ]
+        for md, expected in cases:
+            with self.subTest(md=md):
+                storage, warnings = cp.markdown_to_storage(md)
+                self.assertIn(expected, storage)
+                self.assertEqual(warnings, [])
+
+    def test_image_src_forbidden_protocol(self):
+        storage, warnings = cp.markdown_to_storage("配图 ![图](javascript:alert(1)) 在此")
+        self.assertNotIn("<a href", storage)
+        self.assertNotIn("<img", storage)
+        self.assertIn("![图](javascript:alert(1))", storage)  # 只输出原文纯文本
+        self.assertTrue(any("图片地址协议不允许" in w for w in warnings), warnings)
+
+    def test_image_src_allowed_protocol_kept_literal(self):
+        # 允许的协议：维持原行为（图片不渲染、按原文输出、给不支持警告）
+        storage, warnings = cp.markdown_to_storage("配图 ![示意图](https://example.com/a.png) 在此")
+        self.assertIn("![示意图](https://example.com/a.png)", storage)
+        self.assertNotIn("<img", storage)
+        self.assertTrue(any("图片语法不支持" in w for w in warnings), warnings)
+        # 站内相对路径与锚点同样走「不支持」而非「协议不允许」
+        _s, warnings = cp.markdown_to_storage("![图](/files/a.png)")
+        self.assertTrue(any("图片语法不支持" in w for w in warnings), warnings)
+
+
+class LinkParenUrlTests(unittest.TestCase):
+    """返工 S1：URL 内的括号按配对解析；支持 <URL> 包裹写法。"""
+
+    def test_balanced_parens_in_url(self):
+        storage, warnings = cp.markdown_to_storage("[x](/a_(b))")
+        self.assertIn('<a href="/a_(b)">x</a>', storage)
+        self.assertNotIn("/a_(b)", storage.replace('<a href="/a_(b)">x</a>', ""))
+        self.assertEqual(warnings, [])
+
+    def test_nested_parens_in_url(self):
+        storage, _ = cp.markdown_to_storage("[x](/a_(b_(c)))")
+        self.assertIn('<a href="/a_(b_(c))">x</a>', storage)
+
+    def test_angle_wrapped_url(self):
+        storage, _ = cp.markdown_to_storage("[x](<https://example.com/a_(b)>)")
+        self.assertIn('<a href="https://example.com/a_(b)">x</a>', storage)
+
+    def test_angle_wrapped_url_with_space(self):
+        storage, _ = cp.markdown_to_storage("[x](</a b_(c)>)")
+        self.assertIn('<a href="/a b_(c)">x</a>', storage)
+
+    def test_paren_url_pull_roundtrip(self):
+        storage, _ = cp.markdown_to_storage("[x](/a_(b))")
+        back = cp.storage_to_markdown(storage)
+        self.assertIn("[x](/a_(b))", back)
+        storage2, _ = cp.markdown_to_storage(back)
+        self.assertEqual(storage2, storage)
+
+
+class UrlWhitelistScanTests(unittest.TestCase):
+    """追加单第 1 条（pages 侧）：敏感扫描的 URL 主机白名单。"""
+
+    def test_whitelisted_ip_port_url_passes(self):
+        hits = cp.scan_sensitive(
+            "参见 http://10.1.1.1:8090/pages/viewpage.action?pageId=1 说明",
+            ["10.1.1.1:8090"])
+        self.assertEqual(hits, [])  # URL 整体放行，其中的 IP 也不触发 IP 规则
+
+    def test_whitelisted_domain_and_default_port(self):
+        # 条目不带端口：只比主机，任意端口都放行
+        self.assertEqual(cp.scan_sensitive(
+            "见 https://conf.example.com/x 说明", ["conf.example.com"]), [])
+        self.assertEqual(cp.scan_sensitive(
+            "见 https://conf.example.com:8443/x 说明", ["conf.example.com"]), [])
+        # 条目带端口：缺省端口按协议归一化（https 缺省 443）
+        self.assertEqual(cp.scan_sensitive(
+            "见 https://conf.example.com/x 说明", ["conf.example.com:443"]), [])
+        self.assertEqual(cp.scan_sensitive(
+            "见 http://conf.example.com/x 说明", ["conf.example.com:80"]), [])
+
+    def test_port_mismatch_blocked(self):
+        hits = cp.scan_sensitive(
+            "见 http://10.1.1.1:8090/x 说明", ["10.1.1.1:9999"])
+        rules = [name for name, _masked in hits]
+        self.assertIn("带主机名的 URL", rules)
+        self.assertIn("IPv4 地址", rules)
+
+    def test_no_whitelist_blocks_url_and_ip(self):
+        hits = cp.scan_sensitive("见 http://10.1.1.1:8090/x 说明", [])
+        rules = [name for name, _masked in hits]
+        self.assertIn("带主机名的 URL", rules)
+        self.assertIn("IPv4 地址", rules)
+
+    def test_spoof_userinfo_blocked(self):
+        # http://白名单@evil.com/ 的真实主机是 evil.com
+        hits = cp.scan_sensitive(
+            "见 http://10.1.1.1:8090@evil.com/x 说明", ["10.1.1.1:8090"])
+        self.assertIn("带主机名的 URL", [name for name, _m in hits])
+
+    def test_spoof_query_value_blocked(self):
+        hits = cp.scan_sensitive(
+            "见 http://evil.com/?next=10.1.1.1 说明", ["10.1.1.1"])
+        self.assertIn("带主机名的 URL", [name for name, _m in hits])
+
+    def test_spoof_subdomain_blocked(self):
+        hits = cp.scan_sensitive(
+            "见 http://10.1.1.1.evil.com/ 说明", ["10.1.1.1"])
+        self.assertIn("带主机名的 URL", [name for name, _m in hits])
+
+    def test_secret_query_param_blocked_even_whitelisted(self):
+        for query in ("access_token=abc123", "Session_Id=xyz", "user_password=p"):
+            with self.subTest(query=query):
+                hits = cp.scan_sensitive(
+                    "见 http://10.1.1.1:8090/x?{0} 说明".format(query),
+                    ["10.1.1.1:8090"])
+                self.assertNotEqual(hits, [])
+
+    def test_ftp_never_exempt(self):
+        hits = cp.scan_sensitive(
+            "见 ftp://10.1.1.1:8090/x 说明", ["10.1.1.1:8090"])
+        self.assertIn("带主机名的 URL", [name for name, _m in hits])
+
+    def test_ipv6_whitelisted_passes(self):
+        hits = cp.scan_sensitive(
+            "见 http://[::1]:8090/x 说明", ["[::1]:8090"])
+        self.assertEqual(hits, [])
+
+    def test_bare_ip_outside_url_still_blocked(self):
+        # 白名单只豁免 URL 内部的 IP；正文里裸写的 IP 照旧拦截
+        hits = cp.scan_sensitive("服务器地址是 10.1.1.1，请核对", ["10.1.1.1"])
+        self.assertIn("IPv4 地址", [name for name, _m in hits])
+
+
+class UrlWhitelistCliTests(CliTestCase):
+    """白名单在真实命令路径上的行为（config allow_url_hosts + base_url 自动并入）。"""
+
+    def test_config_allow_url_hosts_passes(self):
+        cfg = self.make_config(allow_url_hosts="docs.example.com")
+        body = "外部文档见[文档](http://docs.example.com/guide)一节。\n"
+        page_id = self.create_ok(title="白名单放行页", body=body, config_path=cfg)
+        self.assertIn(page_id, self.server.state["pages"])
+
+    def test_config_allow_url_hosts_wrong_port_blocked(self):
+        cfg = self.make_config(allow_url_hosts="docs.example.com:9999")
+        path = self.write_body("文档见 http://docs.example.com:8080/guide 一节。\n")
+        proc = self.run_cli(
+            ["create", "--parent", "2001", "--title", "端口不符页", "--file", path, "--yes"],
+            config_path=cfg)
+        self.assertEqual(proc.returncode, 2, self.combined(proc))
+        self.assertIn("带主机名的 URL", self.combined(proc))
+        self.assertEqual(self.server.write_count(), 0)
+
+    def test_external_url_blocked_by_scan(self):
+        path = self.write_body("参见 http://evil.example.com/x 的说明。\n")
+        proc = self.run_cli(
+            ["create", "--parent", "2001", "--title", "外部地址页", "--file", path, "--yes"])
+        self.assertEqual(proc.returncode, 2, self.combined(proc))
+        self.assertIn("带主机名的 URL", self.combined(proc))
+        self.assertEqual(self.server.write_count(), 0)
+
+    def test_base_url_host_auto_whitelisted(self):
+        # 没配 allow_url_hosts：正文里出现 base_url 本身的地址也放行
+        body = "本站地址是 {0}/pages/viewpage.action?pageId=2001 的说明。\n".format(
+            self.server.base_url)
+        page_id = self.create_ok(title="本站地址页", body=body)
+        self.assertIn(page_id, self.server.state["pages"])
+
+    def test_whitelisted_url_with_token_query_blocked(self):
+        cfg = self.make_config(allow_url_hosts="docs.example.com")
+        path = self.write_body("文档见 http://docs.example.com/g?access_token=abc123 一节。\n")
+        proc = self.run_cli(
+            ["create", "--parent", "2001", "--title", "带令牌参数页", "--file", path, "--yes"],
+            config_path=cfg)
+        self.assertEqual(proc.returncode, 2, self.combined(proc))
+        self.assertEqual(self.server.write_count(), 0)
+
+
+def _client_for(server):
+    cfg = {"base_url": server.base_url, "token": "test-token", "username": "",
+           "password": "", "verify_ssl": True, "timeout": 10.0,
+           "allow_system_proxy": False}
+    return cp.ConfluenceClient(cfg)
+
+
+class InternalLinkTests(unittest.TestCase):
+    """追加单第 2 条：站内页面链接转 ac:link（模拟服务器 + 真实客户端）。"""
+
+    def setUp(self):
+        self.server = FakeConfluenceServer().start()
+        self.addCleanup(self.server.stop)
+        self.client = _client_for(self.server)
+        self.base = self.server.base_url
+
+    def convert(self, md, base=None):
+        resolver = cp.InternalPageLinkResolver(self.client, base or self.base)
+        storage, warnings = cp.markdown_to_storage(md, resolver)
+        return storage, warnings, resolver
+
+    def get_requests(self):
+        return [path for method, path in self.server.state["requests"] if method == "GET"]
+
+    def test_form1_viewpage_relative(self):
+        storage, _w, resolver = self.convert("参见[首页](/pages/viewpage.action?pageId=2001)了解。")
+        self.assertIn('<ac:link><ri:page ri:space-key="AI" ri:content-title="AI 空间首页"/>', storage)
+        self.assertIn("<ac:plain-text-body><![CDATA[首页]]></ac:plain-text-body>", storage)
+        self.assertTrue(any("/rest/api/content/2001" in p for p in self.get_requests()))
+        self.assertEqual(resolver.resolved,
+                         [("/pages/viewpage.action?pageId=2001", "AI 空间首页", "2001")])
+
+    def test_form1_viewpage_absolute(self):
+        url = "{0}/pages/viewpage.action?pageId=2001".format(self.base)
+        storage, _w, _r = self.convert("参见[首页]({0})了解。".format(url))
+        self.assertIn('ri:content-title="AI 空间首页"', storage)
+        self.assertIn("<ac:plain-text-body><![CDATA[首页]]></ac:plain-text-body>", storage)
+
+    def test_form2_display(self):
+        import urllib.parse
+        url = "/display/AI/" + urllib.parse.quote("AI 空间首页")
+        storage, _w, resolver = self.convert("参见[点我]({0})。".format(url))
+        self.assertIn('<ri:page ri:space-key="AI" ri:content-title="AI 空间首页"/>', storage)
+        self.assertEqual(resolver.resolved[0][1:], ("AI 空间首页", "2001"))
+        self.assertTrue(any("/rest/api/content?" in p for p in self.get_requests()))
+
+    def test_form2_display_plus_separated_title(self):
+        import urllib.parse
+        url = "/display/AI/" + urllib.parse.quote_plus("AI 空间首页")
+        storage, _w, _r = self.convert("参见[点我]({0})。".format(url))
+        self.assertIn('ri:content-title="AI 空间首页"', storage)
+
+    def test_form3_spaces(self):
+        storage, _w, _r = self.convert("参见[归档](/spaces/AI/pages/2002/AI+归档区)。")
+        self.assertIn('<ri:page ri:space-key="AI" ri:content-title="AI 归档区"/>', storage)
+        self.assertTrue(any("/rest/api/content/2002" in p for p in self.get_requests()))
+
+    def test_context_path_forms(self):
+        ctx_server = FakeConfluenceServer(context_path="/confluence").start()
+        self.addCleanup(ctx_server.stop)
+        client = _client_for(ctx_server)
+        base = ctx_server.base_url
+        for md in ("[首页]({0}/pages/viewpage.action?pageId=2001)".format(base),
+                   "[首页](/confluence/pages/viewpage.action?pageId=2001)"):
+            with self.subTest(md=md):
+                resolver = cp.InternalPageLinkResolver(client, base)
+                storage, _w = cp.markdown_to_storage(md, resolver)
+                self.assertIn('ri:content-title="AI 空间首页"', storage)
+
+    def test_404_fallback_with_warning(self):
+        storage, warnings, _r = self.convert("[不存在的页](/pages/viewpage.action?pageId=9999)")
+        self.assertIn('<a href="/pages/viewpage.action?pageId=9999">不存在的页</a>', storage)
+        self.assertNotIn("<ac:link>", storage)
+        self.assertTrue(any("退回普通链接" in w for w in warnings), warnings)
+
+    def test_bare_url_line_converted(self):
+        url = "{0}/pages/viewpage.action?pageId=4001".format(self.base)
+        storage, _w, _r = self.convert("上一节的内容见：\n\n{0}\n".format(url))
+        self.assertIn("<p><ac:link>", storage)
+        self.assertIn('ri:content-title="中文父页面标题"', storage)
+        self.assertNotIn("ac:plain-text-body", storage)  # 没写文字，显示目标页标题
+
+    def test_bare_url_relative_line_converted(self):
+        storage, _w, _r = self.convert("/pages/viewpage.action?pageId=2001")
+        self.assertIn('ri:content-title="AI 空间首页"', storage)
+
+    def test_chinese_title_and_label(self):
+        storage, _w, _r = self.convert("[中文父页面](/pages/viewpage.action?pageId=4001)")
+        self.assertIn('ri:content-title="中文父页面标题"', storage)
+        self.assertIn("<ac:plain-text-body><![CDATA[中文父页面]]></ac:plain-text-body>", storage)
+
+    def test_label_equal_title_omits_body(self):
+        storage, _w, _r = self.convert("[AI 空间首页](/pages/viewpage.action?pageId=2001)")
+        self.assertIn("<ac:link>", storage)
+        self.assertNotIn("ac:plain-text-body", storage)
+
+    def test_target_in_other_space_still_links(self):
+        # 目标页在 DEV 空间（reader 的排除口径与本工具无关）：照常生成链接
+        storage, _w, _r = self.convert("[研发首页](/pages/viewpage.action?pageId=3001)")
+        self.assertIn('<ri:page ri:space-key="DEV" ri:content-title="研发空间首页"/>', storage)
+
+    def test_external_link_not_converted(self):
+        storage, _w, resolver = self.convert("[外部](http://example.com/pages/viewpage.action?pageId=2001)")
+        self.assertIn('<a href="http://example.com/pages/viewpage.action?pageId=2001">外部</a>', storage)
+        self.assertEqual(resolver.resolved, [])
+
+    def test_pull_roundtrip(self):
+        storage, _w, _r = self.convert("参见[首页](/pages/viewpage.action?pageId=2001)了解。")
+        back = cp.storage_to_markdown(storage)
+        self.assertIn("[首页](/display/AI/", back)
+        storage2, _w2, _r2 = self.convert(back)
+        self.assertEqual(storage2, storage)  # 往返后 storage 完全一致
+
+    def test_pull_roundtrip_bare_title_link(self):
+        storage, _w, _r = self.convert("[AI 空间首页](/pages/viewpage.action?pageId=2001)")
+        back = cp.storage_to_markdown(storage)
+        self.assertIn("[AI 空间首页](/display/AI/", back)
+        storage2, _w2, _r2 = self.convert(back)
+        self.assertEqual(storage2, storage)
+
+
+class InternalLinkCliTests(CliTestCase):
+    """站内链接在 create 预览/执行路径上的行为。"""
+
+    def test_create_preview_lists_internal_links(self):
+        body = "参见[首页](/pages/viewpage.action?pageId=2001)了解背景。\n"
+        path = self.write_body(body)
+        proc = self.run_cli(
+            ["create", "--parent", "2001", "--title", "链接预览页", "--file", path])
+        self.assertEqual(proc.returncode, 0, self.combined(proc))
+        text = self.out(proc)
+        self.assertIn("站内页面链接", text)
+        self.assertIn("/pages/viewpage.action?pageId=2001 → 《AI 空间首页》（ID 2001）", text)
+        self.assertIn("<ac:link>", text)
+        self.assertEqual(self.server.write_count(), 0)  # 预览仍然 0 次写请求
+        gets = [p for m, p in self.server.state["requests"] if m == "GET"]
+        self.assertTrue(any("/rest/api/content/2001" in p for p in gets))
+
+    def test_create_yes_storage_has_ac_link(self):
+        body = "参见[首页](/pages/viewpage.action?pageId=2001)了解背景。\n"
+        page_id = self.create_ok(title="链接落库页", body=body)
+        storage = self.server.page(page_id)["body"]["storage"]["value"]
+        self.assertIn('<ac:link><ri:page ri:space-key="AI" ri:content-title="AI 空间首页"/>', storage)
+        self.assertIn("<ac:plain-text-body><![CDATA[首页]]></ac:plain-text-body>", storage)
+
+    def test_create_absolute_base_url_link(self):
+        body = "参见[首页]({0}/pages/viewpage.action?pageId=2001)。\n".format(self.server.base_url)
+        page_id = self.create_ok(title="绝对地址链接页", body=body)
+        storage = self.server.page(page_id)["body"]["storage"]["value"]
+        self.assertIn('ri:content-title="AI 空间首页"', storage)
+
+    def test_create_preview_404_fallback(self):
+        body = "参见[不存在的页](/pages/viewpage.action?pageId=9999)。\n"
+        path = self.write_body(body)
+        proc = self.run_cli(
+            ["create", "--parent", "2001", "--title", "链接失效页", "--file", path])
+        self.assertEqual(proc.returncode, 0, self.combined(proc))  # 不中断
+        self.assertIn("退回普通链接", self.combined(proc))
+        self.assertIn('<a href="/pages/viewpage.action?pageId=9999">不存在的页</a>',
+                      self.out(proc))
+        self.assertEqual(self.server.write_count(), 0)
+
+    def test_update_preview_lists_internal_links(self):
+        page_id = self.create_ok()
+        body = "新版参见[归档区](/spaces/AI/pages/2002/AI+归档区)。\n"
+        path = self.write_body(body, "new.md")
+        proc = self.run_cli(["update", page_id, "--file", path])
+        self.assertEqual(proc.returncode, 0, self.combined(proc))
+        self.assertIn("站内页面链接", self.out(proc))
+        self.assertIn("《AI 归档区》（ID 2002）", self.out(proc))
+        self.assertEqual(self.server.put_count(), 0)
 
 
 if __name__ == "__main__":
