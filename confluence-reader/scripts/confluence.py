@@ -18,6 +18,8 @@ confluence.py —— 只读访问 Confluence Server / Data Center 的命令行�
   python confluence.py page "http://IP:8090/pages/viewpage.action?pageId=123456"
   python confluence.py page 123456 --recursive --depth 2
   python confluence.py search "支付 接口 规范" --space ABC
+  python confluence.py find --term 支付 --term TXN001 --term 订单表 --space ABC
+  python confluence.py stale --file refs.txt
   python confluence.py children 123456 --depth 2
   python confluence.py extract D:\\docs\\需求.docx
 运行 python confluence.py -h 查看全部命令。
@@ -273,6 +275,10 @@ DEFAULTS = {
     "legacy_office": "auto",
     "max_recursive_pages": "50",
     "console_encoding": "utf-8",
+    "deny_spaces": "",
+    "deny_page_ids": "",
+    "deny_title_keywords": "",
+    "deny_ancestor_ids": "",
 }
 
 ENV_MAP = {
@@ -684,6 +690,101 @@ def resolve_page_id(client: Client, ref: str) -> str:
     if m:
         return m.group(1)
     raise ValueError(f"无法从「{ref}」解析出页面 ID（支持：数字ID、viewpage.action?pageId=、/display/空间/标题、/x/短链）")
+
+
+# =============================================================================
+# 3.5 排除清单（config 的 deny_* 与命令行 --deny-file）
+# =============================================================================
+
+class DeniedError(Exception):
+    """页面命中排除清单，拒绝读取（退出码 5）。"""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+# 排除原因分类（候选表末尾按原因计数时用）
+DENY_CATS = {"space": "空间", "page_id": "页面ID", "title_keyword": "标题关键词", "ancestor": "祖先子树"}
+
+
+class DenyFilter:
+    """排除清单：命中清单的页面不读正文、不下附件。
+
+    来源：config.ini 的 deny_spaces / deny_page_ids / deny_title_keywords / deny_ancestor_ids，
+    命令行可用 --deny-file 追加（每行一条：space:KEY、id:123、title:关键词、ancestor:123，
+    空行与 # 开头的行忽略）。未配置任何一项时 active 为 False，所有命令行为与原来完全一致。
+    """
+
+    def __init__(self, cfg: Config, deny_file: str = None):
+        self.spaces = set(cfg.list("deny_spaces"))
+        self.page_ids = set(cfg.list("deny_page_ids"))
+        self.title_keywords = [k for k in cfg.list("deny_title_keywords") if k]
+        self.ancestor_ids = set(cfg.list("deny_ancestor_ids"))
+        if deny_file:
+            self._load_file(deny_file)
+
+    @property
+    def active(self) -> bool:
+        return bool(self.spaces or self.page_ids or self.title_keywords or self.ancestor_ids)
+
+    def _load_file(self, path: str):
+        # 读取 --deny-file 追加清单（类型:值，类型为 space/id/title/ancestor）
+        for line in read_text_file(path).splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            kind, sep, val = line.replace("=", ":", 1).partition(":")
+            kind, val = kind.strip().lower(), val.strip()
+            if not sep or not val:
+                log(f"排除清单文件忽略无法识别的行：{line}")
+                continue
+            if kind == "space":
+                self.spaces.add(val.lower())
+            elif kind in ("id", "page", "page_id"):
+                self.page_ids.add(val)
+            elif kind == "title":
+                self.title_keywords.append(val.lower())
+            elif kind == "ancestor":
+                self.ancestor_ids.add(val)
+            else:
+                log(f"排除清单文件忽略未知类型 {kind}：{line}")
+
+    def check(self, pid, title: str = "", space_key: str = "", ancestor_ids=None):
+        """检查一个页面是否被排除；命中返回 (分类, 原因)，未命中返回 None。"""
+        pid = str(pid)
+        if pid in self.page_ids:
+            return "page_id", f"页面 ID {pid} 在排除清单中（deny_page_ids）"
+        if space_key and space_key.lower() in self.spaces:
+            return "space", f"空间 {space_key} 在排除清单中（deny_spaces）"
+        low = (title or "").lower()
+        for kw in self.title_keywords:
+            if kw in low:
+                return "title_keyword", f"标题含排除关键词「{kw}」（deny_title_keywords）"
+        if pid in self.ancestor_ids:
+            return "ancestor", f"页面 {pid} 本身在祖先排除清单中，其整棵子树被排除（deny_ancestor_ids）"
+        for a in ancestor_ids or []:
+            if str(a) in self.ancestor_ids:
+                return "ancestor", f"页面位于被排除页面 {a} 的子树下（deny_ancestor_ids）"
+        return None
+
+    def check_page(self, client: Client, pid: str):
+        """轻量取页面元数据（不取正文）并检查排除清单；返回 (元数据 dict, 命中结果或 None)。"""
+        try:
+            d = client.get_json(f"/rest/api/content/{pid}", {"expand": "space,version,ancestors"})
+        except HttpError as e:
+            if e.code == 404:
+                raise HttpError(404, e.url, f"页面 {pid} 不存在，或当前账号没有查看权限")
+            raise
+        anc = [a.get("id") for a in (d.get("ancestors") or [])]
+        hit = self.check(pid, d.get("title", ""), (d.get("space") or {}).get("key", ""), anc)
+        return d, hit
+
+    def summary_line(self, counts: dict) -> str:
+        # 候选表末尾的排除计数行（只给计数，不列被排除页面）
+        total = sum(counts.values())
+        detail = "、".join(f"{DENY_CATS.get(k, k)} {v}" for k, v in counts.items() if v)
+        return f"已排除 {total} 条" + (f"（{detail}）" if detail else "")
 
 
 # =============================================================================
@@ -3876,6 +3977,7 @@ class PageExporter:
         self.c = client
         self.cfg = cfg
         self.args = args
+        self.deny = DenyFilter(cfg, getattr(args, "deny_file", None))
         self.root = output_root(cfg, getattr(args, "out", None))
         self.pool = futures.ThreadPoolExecutor(max_workers=max(1, min(cfg.int("workers") or 4, 8)))
 
@@ -3897,6 +3999,11 @@ class PageExporter:
 
     def export(self, ref: str):
         pid = resolve_page_id(self.c, ref)
+        if self.deny.active:
+            # 先用轻量元数据查排除清单，命中就拒绝：不取正文、不下附件
+            _, hit = self.deny.check_page(self.c, pid)
+            if hit:
+                raise DeniedError(f"页面 {pid} 被排除清单拒绝读取：{hit[1]}")
         args = self.args
         d = self.fetch(pid, getattr(args, "version", None))
         title = d.get("title", "")
@@ -4085,13 +4192,22 @@ class PageExporter:
             try:
                 try:
                     cms = list(self.c.paged(f"/rest/api/content/{pid}/child/comment",
-                                            {"expand": "body.view,version,history,extensions.inlineProperties",
+                                            {"expand": "body.view,version,history,ancestors,extensions.inlineProperties",
                                              "depth": "all"}, limit=100, max_items=500))
                 except HttpError:
                     cms = list(self.c.paged(f"/rest/api/content/{pid}/child/comment",
-                                            {"expand": "body.view,version,history", "depth": "all"},
+                                            {"expand": "body.view,version,history,ancestors", "depth": "all"},
                                             limit=100, max_items=500))
-                lines = []
+                def cm_account(cm):
+                    # 评论作者账号标识（优先 username，其次 userKey、displayName），用于判断是否同一账号
+                    for src in (((cm.get("history") or {}).get("createdBy") or {}),
+                                ((cm.get("version") or {}).get("by") or {})):
+                        for k in ("username", "userKey", "displayName"):
+                            if src.get(k):
+                                return src[k]
+                    return ""
+
+                recs = []
                 for cm in cms:
                     who = ((cm.get("history") or {}).get("createdBy") or {}).get("displayName") or \
                           ((cm.get("version") or {}).get("by") or {}).get("displayName", "")
@@ -4099,13 +4215,45 @@ class PageExporter:
                                      (cm.get("version") or {}).get("when", ""))
                     txt = HtmlToMarkdown(img_cb, link_cb).convert(
                         ((cm.get("body") or {}).get("view") or {}).get("value", "")).strip()
-                    ext_ = cm.get("extensions") or {}
+                    recs.append({"cm": cm, "who": who, "when": when, "txt": txt})
+                ai_idx = set()
+                if not getattr(args, "include_ai_comments", False):
+                    # 「【AI 核对】」开头的评论是 AI 自己写的，其回复链里同一账号的评论也归入 AI 组，
+                    # 单独成节，永远不当证据；--include-ai-comments 时才按普通评论混排输出
+                    ai_acct = {}
+                    for i, r in enumerate(recs):
+                        if r["txt"].lstrip().startswith("【AI 核对】"):
+                            ai_idx.add(i)
+                            ai_acct[str(r["cm"].get("id"))] = cm_account(r["cm"])
+                    changed = True
+                    while changed:
+                        changed = False
+                        for i, r in enumerate(recs):
+                            if i in ai_idx:
+                                continue
+                            anc = [str(a.get("id")) for a in (r["cm"].get("ancestors") or [])
+                                   if a.get("type") == "comment"]
+                            if any(a in ai_acct and cm_account(r["cm"]) == ai_acct[a] for a in anc):
+                                ai_idx.add(i)
+                                ai_acct[str(r["cm"].get("id"))] = cm_account(r["cm"])
+                                changed = True
+
+                def cm_line(r):
+                    ext_ = r["cm"].get("extensions") or {}
                     sel = ((ext_.get("inlineProperties") or {}).get("originalSelection") or "")
                     loc = "（行内评论，针对「" + sel[:60] + "」）" if sel else ""
-                    txt = txt.replace("\n", "\n  ")
-                    lines.append(f"- **{who}** {when}{loc}：{txt}")
-                if lines:
-                    comments_md = f"## 评论（{len(lines)}）\n\n" + "\n".join(lines)
+                    txt = r["txt"].replace("\n", "\n  ")
+                    return f"- **{r['who']}** {r['when']}{loc}：{txt}"
+
+                human = [cm_line(r) for i, r in enumerate(recs) if i not in ai_idx]
+                ai = [cm_line(r) for i, r in enumerate(recs) if i in ai_idx]
+                secs = []
+                if human:
+                    secs.append(f"## 评论（{len(human)}）\n\n" + "\n".join(human))
+                if ai:
+                    secs.append("## AI 自动核对评论（不得作为证据）\n\n" + "\n".join(ai))
+                if secs:
+                    comments_md = "\n\n".join(secs)
             except HttpError as e:
                 vlog(f"获取评论失败：{e}")
 
@@ -4114,7 +4262,11 @@ class PageExporter:
         labels = ", ".join(l.get("name", "") for l in (((d.get("metadata") or {}).get("labels") or {})
                                                         .get("results") or []))
         webui = (d.get("_links") or {}).get("webui", "")
-        head = [f"# {title}", ""]
+        page_url = self.c.url(webui) if webui else ""
+        # 引用标识：供知识库记录来源，格式固定（页面 ID / 版本 / 最后修改时间 / URL）
+        citation = (f"引用：Confluence 页面 {pid} 版本 {ver.get('number', '')}"
+                    f"（最后修改 {_fmt_time(ver.get('when', ''))}）{page_url}")
+        head = [f"# {title}", citation, ""]
         head.append(f"> 页面ID: {pid} | 空间: {space.get('name', '')} ({space.get('key', '')}) | 版本: v{ver.get('number', '')}"
                     f" | 最后修改: {(ver.get('by') or {}).get('displayName', '')} {_fmt_time(ver.get('when', ''))}")
         head.append(f"> 创建: {((hist.get('createdBy') or {}).get('displayName', ''))} {_fmt_time(hist.get('createdDate', ''))}"
@@ -4156,7 +4308,8 @@ class PageExporter:
         md_path = os.path.join(page_dir, "page.md")
         write_text(md_path, page_md)
         meta = {"id": pid, "title": title, "space": space.get("key"), "version": ver.get("number"),
-                "url": self.c.url(webui) if webui else "", "fetched": dt.datetime.now().isoformat(timespec="seconds"),
+                "last_modified": _fmt_time(ver.get("when", "")), "citation": citation,
+                "url": page_url, "fetched": dt.datetime.now().isoformat(timespec="seconds"),
                 "page_md": md_path, "attachments": att_meta,
                 "ref_images": [m for _, _, _, m in extra if m.get("local")]}
         with open(meta_path, "w", encoding="utf-8") as f:
@@ -4261,6 +4414,11 @@ def export_tree(ex: PageExporter, c: Client, cfg: Config, ref: str, args):
         seen.add(pid)
         try:
             r = ex.export(pid)
+        except DeniedError as e:
+            if pid == root_id:
+                raise  # 递归的根页面本身被排除：按直接读取处理，拒绝并退出码 5
+            log(f"页面 {pid} 已跳过：{e}")
+            continue
         except (HttpError, ValueError) as e:
             log(f"页面 {pid} 导出失败：{e}")
             continue
@@ -4280,9 +4438,21 @@ def export_tree(ex: PageExporter, c: Client, cfg: Config, ref: str, args):
 def cmd_children(cfg: Config, args):
     c = Client(cfg)
     pid = resolve_page_id(c, args.ref)
+    deny = DenyFilter(cfg, getattr(args, "deny_file", None))
+    space_key = ""
+    if deny.active:
+        # 根页面命中排除清单时按直接读取处理：拒绝（退出码 5）；子页面逐个过滤
+        meta, hit = deny.check_page(c, pid)
+        if hit:
+            raise DeniedError(f"页面 {pid} 被排除清单拒绝读取：{hit[1]}")
+        space_key = (meta.get("space") or {}).get("key", "")
+    skipped = [0]
 
     def walk(p, dep):
         for k in list_children(c, p):
+            if deny.active and deny.check(k.get("id"), k.get("title", ""), space_key):
+                skipped[0] += 1
+                continue
             ver = k.get("version") or {}
             print(f"{'  ' * dep}- {k.get('title')}  (ID {k.get('id')}, v{ver.get('number', '')}, "
                   f"{_fmt_time(ver.get('when', ''))})")
@@ -4292,6 +4462,8 @@ def cmd_children(cfg: Config, args):
     d = c.get_json(f"/rest/api/content/{pid}", {"expand": "version"})
     print(f"{d.get('title')}  (ID {pid})")
     walk(pid, 0)
+    if skipped[0]:
+        print(f"（已按排除清单过滤 {skipped[0]} 个子页面）")
 
 
 def cmd_search(cfg: Config, args):
@@ -4333,6 +4505,24 @@ def cmd_search(cfg: Config, args):
                           "when": _fmt_time((r.get("version") or {}).get("when", "")),
                           "url": c.url((r.get("_links") or {}).get("webui", "")), "excerpt": ""})
         total = d.get("totalSize", len(items))
+    deny = DenyFilter(cfg, getattr(args, "deny_file", None))
+    denied_n = 0
+    if deny.active and items:
+        # 排除清单对搜索结果同样生效：先按 ID/标题查，需要空间或祖先信息时再轻量取元数据
+        need_meta = bool(deny.spaces or deny.ancestor_ids)
+        kept = []
+        for it in items:
+            hit = deny.check(it["id"], it["title"])
+            if not hit and need_meta and it["id"]:
+                try:
+                    _, hit = deny.check_page(c, it["id"])
+                except HttpError:
+                    hit = None
+            if hit:
+                denied_n += 1
+            else:
+                kept.append(it)
+        items = kept
     print(f"共 {total} 条，显示 {len(items)} 条：\n")
     for i, it in enumerate(items, 1):
         ex = htmlmod.unescape(it["excerpt"] or "")
@@ -4343,6 +4533,153 @@ def cmd_search(cfg: Config, args):
             print(f"   {it['url']}")
         if ex:
             print(f"   摘要: {ex}")
+    if denied_n:
+        print(f"\n（已按排除清单过滤 {denied_n} 条）")
+
+
+def _ts_key(s: str) -> float:
+    # ISO 时间转时间戳（解析失败返回 0，排序时排在最后）
+    try:
+        return dt.datetime.fromisoformat((s or "").replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return 0.0
+
+
+def cmd_find(cfg: Config, args):
+    # 多角度查找：每个词各自组 CQL 并发查询，合并去重后三层排序，输出候选表 + candidates.md/json
+    terms = list(args.term or [])
+    if args.terms_file:
+        for line in read_text_file(args.terms_file).splitlines():
+            t = line.strip()
+            if t and not t.startswith("#"):
+                terms.append(t)
+    terms = list(dict.fromkeys(terms))  # 去重并保持顺序
+    if not terms:
+        raise ValueError("find 需要至少一个检索词（--term 词 或 --terms-file 文件）")
+    c = Client(cfg)
+    deny = DenyFilter(cfg, getattr(args, "deny_file", None))
+
+    def build_cql(term):
+        esc = term.replace("\\", "\\\\").replace('"', '\\"')
+        parts = [f'text ~ "{esc}"', f"type = {args.type}"]
+        spaces = [s for s in (args.space or []) if s]
+        if len(spaces) == 1:
+            parts.append(f'space = "{spaces[0]}"')
+        elif spaces:
+            parts.append("space in (" + ", ".join(f'"{s}"' for s in spaces) + ")")
+        if args.since:
+            parts.append(f'lastmodified >= "{args.since}"')
+        return " and ".join(parts)
+
+    pool_size = max((args.limit or 20) * 3, 50)
+
+    def run(term):
+        return term, list(c.paged("/rest/api/content/search",
+                                  {"cql": build_cql(term), "expand": "space,version,ancestors"},
+                                  limit=100, max_items=pool_size))
+
+    merged = {}
+    with futures.ThreadPoolExecutor(max_workers=max(1, min(cfg.int("workers") or 4, 8))) as pool:
+        for term, results in pool.map(run, terms):
+            for r in results:
+                pid = str(r.get("id", ""))
+                if not pid:
+                    continue
+                ent = merged.get(pid)
+                if ent is None:
+                    ver = r.get("version") or {}
+                    space = r.get("space") or {}
+                    webui = (r.get("_links") or {}).get("webui", "")
+                    ent = {"id": pid, "title": r.get("title", ""), "type": r.get("type", ""),
+                           "space_key": space.get("key", ""), "space_name": space.get("name", ""),
+                           "version": ver.get("number"), "when": ver.get("when", ""),
+                           "ancestors": [a.get("id") for a in (r.get("ancestors") or [])],
+                           "crumbs": " / ".join(a.get("title", "") for a in (r.get("ancestors") or [])),
+                           "url": c.url(webui) if webui else "", "matched": []}
+                    merged[pid] = ent
+                if term not in ent["matched"]:
+                    ent["matched"].append(term)
+    counts = {}
+    cands = []
+    for ent in merged.values():
+        if deny.active:
+            hit = deny.check(ent["id"], ent["title"], ent["space_key"], ent["ancestors"])
+            if hit:
+                counts[hit[0]] = counts.get(hit[0], 0) + 1
+                continue
+        ent["title_hit"] = any(t.lower() in ent["title"].lower() for t in ent["matched"])
+        cands.append(ent)
+    # 三层排序：命中词数多的在前 → 标题命中的在前 → 最近修改的在前
+    cands.sort(key=lambda e: (-len(e["matched"]), 0 if e["title_hit"] else 1, -_ts_key(e["when"])))
+    total_found = len(cands)
+    if args.limit:
+        cands = cands[: args.limit]
+    rows = [["页面ID", "标题", "空间", "版本", "最后修改", "命中词", "面包屑", "URL"]]
+    for e in cands:
+        rows.append([e["id"], e["title"], f"{e['space_name']} ({e['space_key']})".strip(),
+                     f"v{e['version']}" if e["version"] is not None else "",
+                     _fmt_time(e["when"]), "、".join(e["matched"]), e["crumbs"] or "-", e["url"]])
+    table = md_table(rows) if len(rows) > 1 else "（无结果）"
+    root = output_root(cfg, getattr(args, "out", None))
+    md_path = os.path.join(root, "candidates.md")
+    json_path = os.path.join(root, "candidates.json")
+    head = ["# 查找候选", "", f"检索词：{'、'.join(terms)}"]
+    if args.space:
+        head.append(f"限定空间：{'、'.join(args.space)}")
+    if args.since:
+        head.append(f"最后修改不早于：{args.since}")
+    head.append(f"共 {total_found} 条，显示 {len(cands)} 条")
+    md_text = "\n".join(head) + "\n\n" + table + "\n"
+    if counts:
+        md_text += "\n" + deny.summary_line(counts) + "\n"
+    write_text(md_path, md_text)
+    data = {"terms": terms, "type": args.type, "count": total_found, "shown": len(cands),
+            "denied": {"total": sum(counts.values()), "by_reason": counts},
+            "candidates": [{"id": e["id"], "title": e["title"], "type": e["type"],
+                            "space_key": e["space_key"], "space_name": e["space_name"],
+                            "version": e["version"], "last_modified": _fmt_time(e["when"]),
+                            "matched_terms": e["matched"], "title_hit": e["title_hit"],
+                            "breadcrumb": e["crumbs"], "url": e["url"]} for e in cands]}
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+    print(f"检索词：{'、'.join(terms)}")
+    print(f"共 {total_found} 条，显示 {len(cands)} 条：\n")
+    print(table)
+    if counts:
+        print("\n" + deny.summary_line(counts))
+    print(f"\n候选表已写入：{md_path} / {json_path}")
+
+
+def cmd_stale(cfg: Config, args):
+    # 过期检测：refs 文件每行「页面ID 版本号」，逐页查当前版本并分三类输出
+    c = Client(cfg)
+    rows = [["页面ID", "标题", "记录版本", "当前版本", "状态"]]
+    n_up = n_same = n_gone = 0
+    for line in read_text_file(args.file).splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [p for p in re.split(r"[\s,;]+", line) if p]
+        if len(parts) < 2 or not parts[1].isdigit():
+            log(f"stale 忽略无法解析的行：{line}")
+            continue
+        pid, recorded = parts[0], int(parts[1])
+        try:
+            d = c.get_json(f"/rest/api/content/{pid}", {"expand": "version"})
+        except HttpError:
+            rows.append([pid, "", str(recorded), "-", "已删除或无权限"])
+            n_gone += 1
+            continue
+        cur = (d.get("version") or {}).get("number")
+        if cur == recorded:
+            status = "未变"
+            n_same += 1
+        else:
+            status = f"已更新（记录 {recorded} → 当前 {cur}）"
+            n_up += 1
+        rows.append([pid, d.get("title", ""), str(recorded), str(cur if cur is not None else "-"), status])
+    print(md_table(rows) if len(rows) > 1 else "（refs 文件里没有有效的「页面ID 版本号」行）")
+    print(f"\n共 {n_up + n_same + n_gone} 条：已更新 {n_up}，未变 {n_same}，已删除或无权限 {n_gone}")
 
 
 def cmd_spaces(cfg: Config, args):
@@ -4435,6 +4772,8 @@ def main(argv=None):
                "  confluence.py page \"http://IP:8090/pages/viewpage.action?pageId=123456\" --print all\n"
                "  confluence.py page 123456 --recursive --depth 2\n"
                "  confluence.py search \"关键字\" --space KEY\n"
+               "  confluence.py find --term 支付 --term TXN001 --term 订单表\n"
+               "  confluence.py stale --file refs.txt\n"
                "  confluence.py children 123456 --depth 3\n"
                "  confluence.py extract 本地文件.docx\n")
     ap.add_argument("--config", help="配置文件路径（默认在 skill 根目录找 config.ini）")
@@ -4450,6 +4789,9 @@ def main(argv=None):
                    help="附件下载：all=全部(默认) images=仅图片 none=不下载")
     p.add_argument("--no-extract", action="store_true", help="下载附件但不提取内容")
     p.add_argument("--no-comments", action="store_true", help="不获取评论")
+    p.add_argument("--include-ai-comments", action="store_true",
+                   help="把「【AI 核对】」评论按普通评论输出（默认单独成节，不作证据）")
+    p.add_argument("--deny-file", help="追加排除清单文件（每行 类型:值，见 config 的 deny_* 说明）")
     p.add_argument("--page-version", dest="version", type=int, help="获取指定历史版本号")
     p.add_argument("--recursive", action="store_true", help="连同子页面一起导出")
     p.add_argument("--depth", type=int, default=1, help="递归深度（默认 1 层子页面）")
@@ -4463,6 +4805,7 @@ def main(argv=None):
     p = sub.add_parser("children", help="列出子页面树")
     p.add_argument("ref")
     p.add_argument("--depth", type=int, default=1)
+    p.add_argument("--deny-file", help="追加排除清单文件")
 
     p = sub.add_parser("search", help="搜索（关键字或 CQL）")
     p.add_argument("query")
@@ -4471,6 +4814,20 @@ def main(argv=None):
     p.add_argument("--title", action="store_true", help="只搜标题")
     p.add_argument("--cql", action="store_true", help="把 query 当作原生 CQL")
     p.add_argument("--limit", type=int, default=20)
+    p.add_argument("--deny-file", help="追加排除清单文件")
+
+    p = sub.add_parser("find", help="多角度查找：多个词一次查完，合并去重排序后输出候选表")
+    p.add_argument("--term", action="append", help="检索词（可多次给出）")
+    p.add_argument("--terms-file", help="检索词文件（每行一个词）")
+    p.add_argument("--space", action="append", help="限定空间 KEY（可多次给出）")
+    p.add_argument("--since", help="只看最后修改不早于该日期的页面（YYYY-MM-DD）")
+    p.add_argument("--type", default="page", choices=["page", "blogpost"], help="内容类型（默认 page）")
+    p.add_argument("--limit", type=int, default=20, help="候选表最多条数（默认 20）")
+    p.add_argument("--deny-file", help="追加排除清单文件")
+    p.add_argument("--out", help="输出目录")
+
+    p = sub.add_parser("stale", help="过期检测：对比 refs 文件记录的版本与当前版本")
+    p.add_argument("--file", required=True, help="引用清单文件（每行：页面ID 版本号）")
 
     p = sub.add_parser("spaces", help="列出空间")
     p.add_argument("--type", default="global", choices=["global", "personal", "all"])
@@ -4504,6 +4861,7 @@ def main(argv=None):
         ap.print_help()
         return 0
     handlers = {"check": cmd_check, "page": cmd_page, "children": cmd_children, "search": cmd_search,
+                "find": cmd_find, "stale": cmd_stale,
                 "spaces": cmd_spaces, "space": cmd_space, "attachments": cmd_attachments,
                 "download": cmd_download, "extract": cmd_extract}
     try:
@@ -4515,6 +4873,9 @@ def main(argv=None):
     except NetError as e:
         print(f"[网络错误] {e}", file=sys.stderr)
         return 4
+    except DeniedError as e:
+        print(f"[已拒绝] {e}", file=sys.stderr)
+        return 5
     except HttpError as e:
         print(f"[请求错误] {e}", file=sys.stderr)
         return 5

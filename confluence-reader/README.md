@@ -28,7 +28,7 @@
 | PPT | .pptx：每页标题/文字/表格/图片/备注；.ppt 纯文本 |
 | PDF | 文字提取（含中文字体）；内嵌图片导出；扫描件自动识别并导出页面图片供识图；“禁止复制/打印”的加密 PDF 也能读（有打开密码的除外） |
 | 其它 | Visio(.vsdx，含连线关系)、CSV、HTML、邮件(.eml)、各种文本/代码文件、压缩包目录 |
-| 其它功能 | 评论（含行内评论）、标签、面包屑路径、历史版本、子页面树、空间列表、关键字/CQL 搜索、递归导出整个目录 |
+| 其它功能 | 评论（含行内评论）、标签、面包屑路径、历史版本、子页面树、空间列表、关键字/CQL 搜索、递归导出整个目录；多词一次查找（find，输出候选表）、引用过期检测（stale）、排除清单（deny_*，命中的页面不读取）、AI 评论单独分组、page.md 头部固定「引用：」来源行 |
 | 效率 | 附件并发下载；按附件版本缓存，再次读取同一页面不重复下载；一次可读多个页面 |
 
 ## 认证方式（任选其一）
@@ -45,6 +45,7 @@
 - 认证失败会**立即停止、不重试**，避免多次失败触发验证码或锁定域账号。
 - `config.ini` 中是明文密码：不要提交到 Git（已附带 `.gitignore`），不要发给别人。条件允许优先用令牌。
 - 默认不走系统代理，请求只发往你配置的 Confluence 地址。
+- 排除清单：在 `config.ini` 里填 `deny_spaces` / `deny_page_ids` / `deny_title_keywords` / `deny_ancestor_ids`（逗号分隔），命中的页面在所有命令中都不读取正文、不下载附件；`page` 直接读被排除页面会被拒绝（退出码 5）。
 
 ## 常见问题
 
@@ -62,6 +63,8 @@ python scripts/confluence.py page <ID或URL>         读取页面
 python scripts/confluence.py page <ID> --print all 连附件全文一起输出
 python scripts/confluence.py page <ID> --recursive --depth 2
 python scripts/confluence.py search "关键字" --space KEY
+python scripts/confluence.py find --term 支付 --term TXN001 --term 订单表
+python scripts/confluence.py stale --file refs.txt
 python scripts/confluence.py children <ID> --depth 3
 python scripts/confluence.py extract 本地文件.docx
 ```

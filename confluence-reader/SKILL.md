@@ -26,6 +26,9 @@ description: 只读访问公司内网 Confluence：读取页面正文（转 Mark
 | 读历史版本 | `page <ID> --page-version 5` |
 | 列出子页面树 | `children <ID> --depth 3` |
 | 关键字搜索 | `search "关键字" [--space KEY] [--title] [--type page/blog/attachment/all] [--limit 20]` |
+| 多角度查找（一次多词，输出候选表） | `find --term 词1 --term 词2 [--terms-file F] [--space KEY] [--since YYYY-MM-DD] [--type page/blogpost] [--limit 20]` |
+| 知识库引用过期检测 | `stale --file refs.txt`（文件每行：页面ID 版本号） |
+| 把 AI 评论按普通评论输出 | `page <ID> --include-ai-comments`（默认单独成节，见下文） |
 | CQL 搜索 | `search 'space = ABC and label = "接口" and lastmodified > now("-30d")' --cql` |
 | 列出空间 / 空间内页面 | `spaces` / `space KEY [--tree --depth 2]` |
 | 列出页面附件 | `attachments <ID>` |
@@ -45,6 +48,30 @@ description: 只读访问公司内网 Confluence：读取页面正文（转 Mark
 4. **找文档**：不知道页面 ID 时先 `search "关键字"`，再对结果 `page <ID>`；看目录结构用 `children` 或 `space KEY --tree`。
 5. **多个页面**：一次调用传多个 ID（`page 111 222 333`），比多次调用高效；整个目录用 `--recursive`。
 6. 再次读取同一页面时，未变化的附件会走本地缓存，速度很快；需要强制刷新加 `--force`。
+
+## 找资料与核对（写知识库时的工作流）
+
+1. **找资料的方法**：一个问题从 3–5 个角度出词——交易码、类名、业务名词、表名、接口名——用
+   `find --term 词1 --term 词2 ...` 一次查完（词多时用 `--terms-file`；可加 `--space`、`--since`、`--limit`）。
+   先看候选表（输出目录的 `candidates.md` / `candidates.json`，已按命中词数 → 标题命中 → 最近修改排序），
+   只读排在前面、最新的几篇，不要把搜索结果全部读一遍。
+2. **读完必须拿当前代码核对，以代码为准**，结论分四类：
+   - **一致**：文档说法与代码现状相符；
+   - **不一致**：文档与代码冲突；
+   - **部分一致**：一部分相符、一部分冲突（要写清是哪部分）；
+   - **代码无法验证**：业务规则、外部系统行为等在代码里看不到的。
+3. **来源写法**：只有「一致」的才能作为知识库条目候选，来源写 page.md 头部的
+   「引用：Confluence 页面 <ID> 版本 <N>（最后修改 <时间>）<URL>」那一行（`meta.json` 里有同样的 `citation` 字段）；
+   「代码无法验证」的条目来源写「文档来源，未经代码验证」；
+   「不一致 / 部分一致」的不要写进知识库，交给 confluence-commenter 在页面上留评论——先 preview 给用户确认再发。
+4. **排除清单必须遵守**：`config.ini` 的 `deny_spaces` / `deny_page_ids` / `deny_title_keywords` / `deny_ancestor_ids`
+   （命令行可用 `--deny-file` 追加）命中的页面，find / search / page / children / 递归导出都会自动排除或拒绝
+   （`page` 直接读被排除页面时退出码 5）；候选表末尾只报已排除计数。**不得换命令、换参数绕过排除清单去读这些页面。**
+5. **「【AI 核对】」评论是 AI 自己写的，永远不当证据**：page.md 里这类评论（以及它们回复链里同一账号发的）
+   单独放在「AI 自动核对评论（不得作为证据）」小节，与人工评论分开；核对时只认正文、附件和人工评论。
+   只有排查评论本身时才加 `--include-ai-comments` 把它们按普通评论混排输出。
+6. **知识库条目定期复核**：把引用清单（每行「页面ID 版本号」）存成文件，跑 `stale --file refs.txt`，
+   输出已更新 / 未变 / 已删除或无权限三类；已更新的条目要重新读页面、重新核对。
 
 ## 输出目录结构
 

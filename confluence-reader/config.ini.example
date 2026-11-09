@@ -23,3 +23,7 @@ min_image_px =
 legacy_office =
 max_recursive_pages =
 console_encoding =
+deny_spaces =
+deny_page_ids =
+deny_title_keywords =
+deny_ancestor_ids =
