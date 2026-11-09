@@ -1,0 +1,12 @@
+# 真实配置（含令牌/密码）绝不进仓库
+config.ini
+
+# 本地状态：登记表、写操作日志、运行计数、pull 下来的文件
+logs/
+pages.jsonl
+ops.jsonl
+run_state.json
+pull/
+
+__pycache__/
+*.pyc

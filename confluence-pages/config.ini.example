@@ -1,0 +1,51 @@
+# confluence-pages 配置模板
+# 使用方法：把本文件复制为 config.ini，再填写。config.ini 已被.gitignore 忽略，不会进仓库。
+# 所有敏感项默认留空；令牌与密码只填在本机 config.ini 里，不要提交、不要发给任何人。
+
+[confluence]
+# Confluence 地址，可带 context path，例如 http://host:8090/confluence
+base_url =
+# 个人访问令牌（推荐；与 confluence-commenter 共用同一个写入令牌）。填了令牌就优先用令牌。
+token =
+# 没有令牌时用用户名 + 密码（Basic 认证）。与令牌二选一。
+username =
+password =
+# 内网自签证书可设为 false；默认 true
+verify_ssl = true
+# 是否走系统代理。内网地址通常应设为 false（默认就不走）
+allow_system_proxy = false
+# 单次请求超时（秒）
+timeout = 10
+# 控制台输出编码：utf-8 或 gbk（Windows 旧控制台可设 gbk）
+console_encoding = utf-8
+
+[pages]
+# AI 专用空间的 KEY，可多个，逗号分隔，例如 AISPACE
+# 为空时 create 和 update 一律拒绝（提示“未配置 AI 专用空间”）。
+# 所有新建、修改、status、pull 都只覆盖这些空间。
+allow_spaces =
+# 父页面白名单（页面 ID，逗号分隔）。
+# 配了：父页面还必须在这个名单里才能新建；
+# 没配：allow_spaces 内任意父页面下都能新建，包括空间首页。
+allow_parent_ids =
+
+[limits]
+# 正文大小上限（字节，UTF-8），默认 200KB
+max_body_bytes = 204800
+# 单次运行最多写操作次数（create / update 各算 1 次）
+max_writes_per_run = 10
+
+[deny]
+# 拒绝清单：命中任何一项就拒绝读写。多个值用逗号分隔。
+# 空间 key，例如 SECRET,HR
+spaces =
+# 页面 ID，例如 123456,234567
+page_ids =
+# 页面标题关键词，例如 机密,内部结算
+title_keywords =
+
+[paths]
+# 本地状态目录（相对路径按 skill 根目录计算），默认 logs
+# 登记表 pages.jsonl、写操作日志 ops.jsonl、pull 下来的 Markdown 都放在这里，
+# 已被.gitignore 忽略，不要提交。
+log_dir = logs
