@@ -393,6 +393,21 @@ class TestStale(Base):
         self.assertIn("共 4 条：已更新 1，未变 2，已删除或无权限 1", out)
         self.assertIn("忽略无法解析的行", err)
 
+    def test_stale_error_classification(self):
+        # S3：只有 404/403 归「已删除或无权限」；500 等其他错误单列「查询失败」
+        refs = os.path.join(self.tmp, "refs.txt")
+        with open(refs, "w", encoding="utf-8") as f:
+            f.write("1015 1\n1016 1\n1013 1\n1001 3\n")
+        code, out, _ = self.run_cli(self.write_config(), "stale", "--file", refs)
+        self.assertEqual(code, 0)
+        # 输出行层面：500 的行是「查询失败」，403 与 404 的行是「已删除或无权限」
+        lines = {ln.split("|")[1].strip(): ln for ln in out.splitlines() if ln.startswith("| 10")}
+        self.assertIn("查询失败", lines["1015"])
+        self.assertIn("已删除或无权限", lines["1016"])
+        self.assertIn("已删除或无权限", lines["1013"])
+        self.assertIn("未变", lines["1001"])
+        self.assertIn("共 4 条：已更新 0，未变 1，已删除或无权限 2，查询失败 1", out)
+
 
 class TestMeta(Base):
     def test_gbk_console(self):
@@ -415,6 +430,220 @@ class TestMeta(Base):
         self.assertNotIn('method="DELETE"', src)
         i = src.index('method="POST"')
         self.assertIn("/dologin.action", src[max(0, i - 600):i])
+
+    def test_source_all_content_commands_pass_deny_check(self):
+        # 接线检查（M4）：会读页面内容或附件的子命令入口，直接或经
+        # PageExporter.export / export_tree，必须能到达 DenyFilter 的 check / check_page。
+        # 「到达」的判定要精确：某个函数里存在对「DenyFilter 实例」的 check / check_page
+        # 调用（形如 deny.check*(...) 或 self.deny.check_page(...)）才算该函数设了关卡，
+        # 再沿调用图看每个子命令能否到达设了关卡的函数；删掉任何一处的接线这里都会失败
+        with open(SCRIPT, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        calls = {}   # 函数名 -> 它调用到的名字集合（调用图遍历用）
+        gated = set()  # 内部设有排除关卡的函数名
+
+        def func_has_gate(node):
+            deny_vars = set()
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Assign) and isinstance(sub.value, ast.Call) \
+                        and isinstance(sub.value.func, ast.Name) and sub.value.func.id == "DenyFilter":
+                    for t in sub.targets:
+                        if isinstance(t, ast.Name):
+                            deny_vars.add(t.id)
+            for sub in ast.walk(node):
+                if not isinstance(sub, ast.Call) or not isinstance(sub.func, ast.Attribute):
+                    continue
+                if sub.func.attr not in ("check", "check_page"):
+                    continue
+                recv = sub.func.value
+                if isinstance(recv, ast.Name) and recv.id in deny_vars:
+                    return True
+                if isinstance(recv, ast.Attribute) and recv.attr == "deny":
+                    return True
+            return False
+
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                names = set()
+                for sub in ast.walk(node):
+                    if isinstance(sub, ast.Call):
+                        fn = sub.func
+                        if isinstance(fn, ast.Attribute):
+                            names.add(fn.attr)
+                        elif isinstance(fn, ast.Name):
+                            names.add(fn.id)
+                calls.setdefault(node.name, set()).update(names)
+                if func_has_gate(node):
+                    gated.add(node.name)
+
+        def reaches(start):
+            seen, stack = set(), [start]
+            while stack:
+                cur = stack.pop()
+                if cur in seen:
+                    continue
+                seen.add(cur)
+                stack.extend(calls.get(cur, ()))
+            return seen
+
+        for fn in ("cmd_page", "cmd_children", "cmd_search", "cmd_find",
+                   "cmd_space", "cmd_attachments", "cmd_download"):
+            self.assertTrue(gated & reaches(fn), fn + " 未接入排除清单检查")
+        # page 的单页与递归导出都经 PageExporter.export，那里本身必须设有 check_page 关卡
+        self.assertIn("export", gated)
+
+
+class TestAttachmentsDownloadDeny(Base):
+    """M4：attachments 与 download 不得绕过排除清单。"""
+
+    ATT_URL = "/download/attachments/1001/notes.txt"
+
+    def att_url(self):
+        return self.server.base_url + self.ATT_URL
+
+    def test_attachments_denied_page_exit5(self):
+        cfg = self.write_config(extra="deny_page_ids = 1001")
+        code, out, err = self.run_cli(cfg, "attachments", "1001")
+        self.assertEqual(code, 5)
+        self.assertIn("排除清单", err)
+        self.assertNotIn("notes.txt", out)
+        # 拒绝发生在列附件之前：服务器没有收到附件列表请求
+        self.assertEqual(self.server.count("/child/attachment"), 0)
+
+    def test_attachments_deny_file_exit5(self):
+        df = os.path.join(self.tmp, "deny.txt")
+        with open(df, "w", encoding="utf-8") as f:
+            f.write("id:1001\n")
+        code, _, err = self.run_cli(self.write_config(), "attachments", "1001", "--deny-file", df)
+        self.assertEqual(code, 5)
+        self.assertIn("排除清单", err)
+
+    def test_attachments_allowed_lists_files(self):
+        code, out, _ = self.run_cli(self.write_config(), "attachments", "1001")
+        self.assertEqual(code, 0)
+        self.assertIn("notes.txt", out)
+        self.assertIn("pic.png", out)
+
+    def test_download_denied_page_attachment_rejected(self):
+        cfg = self.write_config(extra="deny_page_ids = 1001")
+        code, _, err = self.run_cli(cfg, "download", self.att_url())
+        self.assertEqual(code, 5)
+        self.assertIn("已拒绝", err)
+        self.assertIn("排除清单", err)
+        # 一个字节都没下：服务器没收到下载请求，本地也没有文件
+        self.assertEqual(self.server.count("/download/attachments/1001"), 0)
+        self.assertFalse(os.path.exists(os.path.join(self.outdir, "downloads", "notes.txt")))
+
+    def test_download_allowed_when_other_page_denied(self):
+        cfg = self.write_config(extra="deny_page_ids = 1007")
+        code, out, _ = self.run_cli(cfg, "download", self.att_url())
+        self.assertEqual(code, 0)
+        self.assertIn("已下载", out)
+        self.assertTrue(os.path.exists(os.path.join(self.outdir, "downloads", "notes.txt")))
+
+    def test_download_unparseable_url_rejected_when_deny_active(self):
+        # 排除清单生效时，解析不出页面 ID 的下载地址无法确认归属，拒绝下载
+        cfg = self.write_config(extra="deny_page_ids = 1007")
+        url = self.server.base_url + "/download/resources/logo.png"
+        code, _, err = self.run_cli(cfg, "download", url)
+        self.assertEqual(code, 5)
+        self.assertIn("已拒绝", err)
+        self.assertIn("解析不出页面 ID", err)
+        self.assertEqual(self.server.count("/download/resources"), 0)
+
+    def test_download_unparseable_url_unchanged_when_deny_inactive(self):
+        # 排除清单未启用时 download 行为与原来一致：照常发请求（模拟服务器回 404）
+        url = self.server.base_url + "/download/resources/logo.png"
+        code, _, err = self.run_cli(self.write_config(), "download", url)
+        self.assertEqual(code, 5)
+        self.assertIn("请求错误", err)
+        self.assertNotIn("已拒绝", err)
+        self.assertEqual(self.server.count("/download/resources"), 1)
+
+
+class TestTreeDeny(Base):
+    """S2：children / space --tree 沿树传递祖先链，被排除节点的整棵子树不列、只计数。"""
+
+    def test_children_denied_middle_node_prunes_subtree(self):
+        cfg = self.write_config(extra="deny_page_ids = 3002")
+        code, out, _ = self.run_cli(cfg, "children", "3001", "--depth", "2")
+        self.assertEqual(code, 0)
+        self.assertIn("树根页面", out)
+        self.assertNotIn("树枝甲", out)
+        self.assertNotIn("树叶甲", out)  # 被排除节点的子孙也不出现
+        self.assertIn("树枝乙", out)     # 未命中分支正常列出
+        self.assertIn("树叶乙", out)
+        self.assertIn("已按排除清单过滤 1 个子页面", out)
+
+    def test_children_denied_ancestor_prunes_subtree(self):
+        cfg = self.write_config(extra="deny_ancestor_ids = 3002")
+        code, out, _ = self.run_cli(cfg, "children", "3001", "--depth", "2")
+        self.assertEqual(code, 0)
+        self.assertNotIn("树枝甲", out)
+        self.assertNotIn("树叶甲", out)
+        self.assertIn("树枝乙", out)
+        self.assertIn("树叶乙", out)
+        self.assertIn("已按排除清单过滤 1 个子页面", out)
+
+    def test_children_no_deny_lists_whole_tree(self):
+        code, out, _ = self.run_cli(self.write_config(), "children", "3001", "--depth", "2")
+        self.assertEqual(code, 0)
+        for t in ("树根页面", "树枝甲", "树叶甲", "树枝乙", "树叶乙"):
+            self.assertIn(t, out)
+
+    def test_space_tree_denied_subtree_filtered(self):
+        cfg = self.write_config(extra="deny_page_ids = 3002")
+        code, out, _ = self.run_cli(cfg, "space", "DEV", "--tree", "--depth", "3")
+        self.assertEqual(code, 0)
+        self.assertIn("树根页面", out)
+        self.assertNotIn("树枝甲", out)
+        self.assertNotIn("树叶甲", out)
+        self.assertIn("树枝乙", out)
+        self.assertIn("树叶乙", out)
+        self.assertIn("已按排除清单过滤 1 个页面", out)
+
+    def test_space_tree_denied_root_filtered(self):
+        cfg = self.write_config(extra="deny_page_ids = 3001")
+        code, out, _ = self.run_cli(cfg, "space", "DEV", "--tree", "--depth", "3")
+        self.assertEqual(code, 0)
+        for t in ("树根页面", "树枝甲", "树叶甲", "树枝乙", "树叶乙"):
+            self.assertNotIn(t, out)
+        self.assertIn("已按排除清单过滤 1 个页面", out)
+
+    def test_space_tree_no_deny_lists_whole_tree(self):
+        code, out, _ = self.run_cli(self.write_config(), "space", "DEV", "--tree", "--depth", "3")
+        self.assertEqual(code, 0)
+        for t in ("树根页面", "树枝甲", "树叶甲", "树枝乙", "树叶乙"):
+            self.assertIn(t, out)
+        self.assertNotIn("已按排除清单过滤", out)
+
+
+class TestChinese(Base):
+    """S4：标题、正文、检索词含中文时的读取与检索。"""
+
+    def test_chinese_page_read(self):
+        code, _, _ = self.run_cli(self.write_config(), "page", "4001")
+        self.assertEqual(code, 0)
+        md = self.read_page_md("4001")
+        self.assertIn("# 中文标题页面", md)
+        self.assertIn("中文正文独特短语", md)
+
+    def test_chinese_search_hits_body_and_title(self):
+        cfg = self.write_config()
+        code, out, _ = self.run_cli(cfg, "search", "中文正文独特短语")
+        self.assertEqual(code, 0)
+        self.assertIn("中文标题页面", out)
+        code, out, _ = self.run_cli(cfg, "search", "中文标题", "--title")
+        self.assertEqual(code, 0)
+        self.assertIn("中文标题页面", out)
+
+    def test_chinese_find(self):
+        cfg = self.write_config()
+        _, _, _, data = self.run_find(cfg, "--term", "中文正文独特短语")
+        self.assertEqual([c["id"] for c in data["candidates"]], ["4001"])
+        _, _, _, data = self.run_find(cfg, "--term", "中文标题")
+        self.assertEqual([c["id"] for c in data["candidates"]], ["4001"])
+        self.assertTrue(data["candidates"][0]["title_hit"])
 
 
 if __name__ == "__main__":

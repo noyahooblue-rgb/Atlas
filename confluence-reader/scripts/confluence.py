@@ -4440,28 +4440,31 @@ def cmd_children(cfg: Config, args):
     pid = resolve_page_id(c, args.ref)
     deny = DenyFilter(cfg, getattr(args, "deny_file", None))
     space_key = ""
+    root_ancestors = []
     if deny.active:
         # 根页面命中排除清单时按直接读取处理：拒绝（退出码 5）；子页面逐个过滤
         meta, hit = deny.check_page(c, pid)
         if hit:
             raise DeniedError(f"页面 {pid} 被排除清单拒绝读取：{hit[1]}")
         space_key = (meta.get("space") or {}).get("key", "")
+        root_ancestors = [str(a.get("id")) for a in (meta.get("ancestors") or [])]
     skipped = [0]
 
-    def walk(p, dep):
+    def walk(p, dep, anc):
+        # anc 是 p 的祖先 ID 链（树根在前）：沿树传递，任一节点命中排除就整棵子树不列、只计数
         for k in list_children(c, p):
-            if deny.active and deny.check(k.get("id"), k.get("title", ""), space_key):
+            if deny.active and deny.check(k.get("id"), k.get("title", ""), space_key, anc + [str(p)]):
                 skipped[0] += 1
                 continue
             ver = k.get("version") or {}
             print(f"{'  ' * dep}- {k.get('title')}  (ID {k.get('id')}, v{ver.get('number', '')}, "
                   f"{_fmt_time(ver.get('when', ''))})")
             if dep + 1 < args.depth:
-                walk(k["id"], dep + 1)
+                walk(k["id"], dep + 1, anc + [str(p)])
 
     d = c.get_json(f"/rest/api/content/{pid}", {"expand": "version"})
     print(f"{d.get('title')}  (ID {pid})")
-    walk(pid, 0)
+    walk(pid, 0, root_ancestors)
     if skipped[0]:
         print(f"（已按排除清单过滤 {skipped[0]} 个子页面）")
 
@@ -4651,10 +4654,11 @@ def cmd_find(cfg: Config, args):
 
 
 def cmd_stale(cfg: Config, args):
-    # 过期检测：refs 文件每行「页面ID 版本号」，逐页查当前版本并分三类输出
+    # 过期检测：refs 文件每行「页面ID 版本号」，逐页查当前版本并分四类输出
+    # （已更新 / 未变 / 已删除或无权限 / 查询失败：只有 404、403 算已删除或无权限）
     c = Client(cfg)
     rows = [["页面ID", "标题", "记录版本", "当前版本", "状态"]]
-    n_up = n_same = n_gone = 0
+    n_up = n_same = n_gone = n_fail = 0
     for line in read_text_file(args.file).splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -4666,9 +4670,13 @@ def cmd_stale(cfg: Config, args):
         pid, recorded = parts[0], int(parts[1])
         try:
             d = c.get_json(f"/rest/api/content/{pid}", {"expand": "version"})
-        except HttpError:
-            rows.append([pid, "", str(recorded), "-", "已删除或无权限"])
-            n_gone += 1
+        except HttpError as e:
+            if e.code in (404, 403):
+                rows.append([pid, "", str(recorded), "-", "已删除或无权限"])
+                n_gone += 1
+            else:
+                rows.append([pid, "", str(recorded), "-", "查询失败"])
+                n_fail += 1
             continue
         cur = (d.get("version") or {}).get("number")
         if cur == recorded:
@@ -4679,7 +4687,8 @@ def cmd_stale(cfg: Config, args):
             n_up += 1
         rows.append([pid, d.get("title", ""), str(recorded), str(cur if cur is not None else "-"), status])
     print(md_table(rows) if len(rows) > 1 else "（refs 文件里没有有效的「页面ID 版本号」行）")
-    print(f"\n共 {n_up + n_same + n_gone} 条：已更新 {n_up}，未变 {n_same}，已删除或无权限 {n_gone}")
+    print(f"\n共 {n_up + n_same + n_gone + n_fail} 条：已更新 {n_up}，未变 {n_same}，"
+          f"已删除或无权限 {n_gone}，查询失败 {n_fail}")
 
 
 def cmd_spaces(cfg: Config, args):
@@ -4697,17 +4706,28 @@ def cmd_space(cfg: Config, args):
     key = args.key
     if args.tree:
         roots = list(c.paged(f"/rest/api/space/{key}/content/page", {"depth": "root"}, limit=100))
+        deny = DenyFilter(cfg, getattr(args, "deny_file", None))
+        skipped = [0]
 
-        def walk(p, dep):
+        def walk(p, dep, anc):
+            # anc 是 p 的祖先 ID 链（树根在前）：沿树传递，命中排除的节点整棵子树不列、只计数
             for k in list_children(c, p):
+                if deny.active and deny.check(k.get("id"), k.get("title", ""), key, anc + [str(p)]):
+                    skipped[0] += 1
+                    continue
                 print(f"{'  ' * dep}- {k.get('title')}  (ID {k.get('id')})")
                 if dep + 1 < args.depth:
-                    walk(k["id"], dep + 1)
+                    walk(k["id"], dep + 1, anc + [str(p)])
 
         for r in roots:
+            if deny.active and deny.check(r.get("id"), r.get("title", ""), key, []):
+                skipped[0] += 1
+                continue
             print(f"- {r.get('title')}  (ID {r.get('id')})")
             if args.depth > 1:
-                walk(r["id"], 1)
+                walk(r["id"], 1, [])
+        if skipped[0]:
+            print(f"（已按排除清单过滤 {skipped[0]} 个页面）")
         return
     n = 0
     for p in c.paged("/rest/api/content", {"spaceKey": key, "type": "page", "expand": "version"}, limit=100,
@@ -4721,6 +4741,12 @@ def cmd_space(cfg: Config, args):
 def cmd_attachments(cfg: Config, args):
     c = Client(cfg)
     pid = resolve_page_id(c, args.ref)
+    deny = DenyFilter(cfg, getattr(args, "deny_file", None))
+    if deny.active:
+        # 附件同样受排除清单约束：先查页面元数据，命中就拒绝（退出码 5），不列附件
+        _, hit = deny.check_page(c, pid)
+        if hit:
+            raise DeniedError(f"页面 {pid} 被排除清单拒绝读取：{hit[1]}")
     rows = [["#", "ID", "文件名", "大小", "类型", "版本", "下载地址"]]
     for i, a in enumerate(c.paged(f"/rest/api/content/{pid}/child/attachment", {"expand": "version"}), 1):
         e = a.get("extensions") or {}
@@ -4733,6 +4759,16 @@ def cmd_attachments(cfg: Config, args):
 def cmd_download(cfg: Config, args):
     c = Client(cfg)
     url = c.url(args.url) if not re.match(r"^https?://", args.url) else args.url
+    deny = DenyFilter(cfg, getattr(args, "deny_file", None))
+    if deny.active:
+        # 排除清单生效时下载也要过检查：能从地址解析出页面 ID 就查该页；
+        # 解析不出页面 ID 的地址无法确认归属，一律拒绝（退出码 5）
+        m = re.search(r"/download/attachments/(\d+)(?:/|$)", urllib.parse.urlsplit(url).path)
+        if not m:
+            raise DeniedError("排除清单已启用，但下载地址解析不出页面 ID，拒绝下载")
+        _, hit = deny.check_page(c, m.group(1))
+        if hit:
+            raise DeniedError(f"页面 {m.group(1)} 被排除清单拒绝下载：{hit[1]}")
     root = output_root(cfg, args.out)
     fn = safe_name(urllib.parse.unquote(posixpath.basename(urllib.parse.urlsplit(url).path)) or "download.bin")
     dest = os.path.join(root, "downloads", fn)
@@ -4838,15 +4874,18 @@ def main(argv=None):
     p.add_argument("--tree", action="store_true", help="按层级显示")
     p.add_argument("--depth", type=int, default=2)
     p.add_argument("--limit", type=int, default=300)
+    p.add_argument("--deny-file", help="追加排除清单文件")
 
     p = sub.add_parser("attachments", help="列出页面附件")
     p.add_argument("ref")
+    p.add_argument("--deny-file", help="追加排除清单文件")
 
     p = sub.add_parser("download", help="下载任意 Confluence 地址（带认证）并提取内容")
     p.add_argument("url")
     p.add_argument("--no-extract", action="store_true")
     p.add_argument("--max-chars", type=int)
     p.add_argument("--out")
+    p.add_argument("--deny-file", help="追加排除清单文件")
 
     p = sub.add_parser("extract", help="提取本地文件内容（docx/xlsx/pptx/pdf/doc/xls/ppt/vsdx/...）")
     p.add_argument("file")

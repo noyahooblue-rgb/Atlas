@@ -52,11 +52,12 @@ def tiny_png():
 
 
 def _page(pid, title, space, parent, versions, current, created="2026-10-01T09:00:00.000+08:00",
-          created_by="alice", labels=None, attachments=None, comments=None, ptype="page", deleted=False):
+          created_by="alice", labels=None, attachments=None, comments=None, ptype="page", deleted=False,
+          http_error=None):
     return {"id": pid, "title": title, "space": space, "parent": parent, "versions": versions,
             "current": current, "created": created, "created_by": created_by,
             "labels": labels or [], "attachments": attachments or [], "comments": comments or [],
-            "type": ptype, "deleted": deleted}
+            "type": ptype, "deleted": deleted, "http_error": http_error}
 
 
 def _ver(body, when, by="alice"):
@@ -128,6 +129,28 @@ def build_store():
               {1: _ver("<p>不存在了。</p>", "2026-10-01T10:00:00.000+08:00")}, 1, deleted=True))
     add(_page("1014", "支付周报", "DEV", None,
               {1: _ver("<p>支付周报正文。</p>", "2026-11-08T12:00:00.000+08:00")}, 1, ptype="blogpost"))
+    # stale 错误分类专用：取页面时分别返回 500 / 403
+    add(_page("1015", "故障页面", "DEV", None,
+              {1: _ver("<p>服务器故障测试页正文。</p>", "2026-11-08T13:00:00.000+08:00")}, 1,
+              http_error=500))
+    add(_page("1016", "无权限页面", "DEV", None,
+              {1: _ver("<p>无权限测试页正文。</p>", "2026-11-08T14:00:00.000+08:00")}, 1,
+              http_error=403))
+    # 树形过滤专用数据：根 3001 → 树枝甲 3002 → 树叶甲 3004；树枝乙 3003 → 树叶乙 3005
+    add(_page("3001", "树根页面", "DEV", None,
+              {1: _ver("<p>树形结构测试根。</p>", "2026-11-01T09:00:00.000+08:00")}, 1))
+    add(_page("3002", "树枝甲", "DEV", "3001",
+              {1: _ver("<p>树形结构测试枝甲。</p>", "2026-11-02T09:00:00.000+08:00")}, 1))
+    add(_page("3003", "树枝乙", "DEV", "3001",
+              {1: _ver("<p>树形结构测试枝乙。</p>", "2026-11-02T10:00:00.000+08:00")}, 1))
+    add(_page("3004", "树叶甲", "DEV", "3002",
+              {1: _ver("<p>树形结构测试叶甲。</p>", "2026-11-03T09:00:00.000+08:00")}, 1))
+    add(_page("3005", "树叶乙", "DEV", "3003",
+              {1: _ver("<p>树形结构测试叶乙。</p>", "2026-11-03T10:00:00.000+08:00")}, 1))
+    # 中文用例专用：中文标题 + 正文含独特中文短语
+    add(_page("4001", "中文标题页面", "DEV", None,
+              {1: _ver("<p>这是一页中文内容，包含中文正文独特短语，用于验证中文处理。</p>",
+                       "2026-11-09T09:00:00.000+08:00")}, 1))
     # find 排序专用数据：检索词「苹果」「香蕉」
     add(_page("2001", "苹果香蕉派", "DEV", None,
               {1: _ver("<p>苹果 香蕉 都好吃。</p>", "2026-11-01T09:00:00.000+08:00")}, 1))
@@ -504,6 +527,11 @@ class MockConfluence:
         m = re.match(r"^/rest/api/content/(\d+)$", rest)
         if m and h.command == "GET":
             page = store["pages"].get(m.group(1))
+            if page and page.get("http_error"):
+                # 故障注入：该页面取内容时固定返回指定 HTTP 错误（stale 错误分类测试用）
+                code = page["http_error"]
+                self.send_json(h, {"statusCode": code, "message": "mock http error %d" % code}, code)
+                return
             if not page or page["deleted"]:
                 self.send_json(h, {"statusCode": 404, "message": "No content found"}, 404)
                 return
