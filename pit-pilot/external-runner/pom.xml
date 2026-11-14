@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Method (b): a standalone pom OUTSIDE the project under test.
+  The project (../sample) is not modified in any way; its files are
+  only read.
+
+  How it works: pitest-maven refuses to run on a project whose own
+  source roots do not exist ("Project has either no tests or no
+  production code" - NonEmptyProjectCheck in pitest-maven only
+  checks that the compile/test source root directories exist).
+  So this pom points its source roots at the project's sources and
+  compiles them into its OWN target directory, then runs PIT there.
+
+  Consequences (see README): this pom must repeat the module's
+  compiler settings and dependencies, and if the real build uses
+  annotation processors or special compiler arguments the copies
+  compiled here may differ from the real build's classes.
+
+  Run from this directory:
+    mvn test-compile org.pitest:pitest-maven:1.17.4:mutationCoverage
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.example</groupId>
+    <artifactId>pit-external-runner</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.source>1.8</maven.compiler.source>
+        <maven.compiler.target>1.8</maven.compiler.target>
+    </properties>
+
+    <dependencies>
+        <!-- Must mirror the dependencies of the module under test.
+             sample-core only needs JUnit (test scope). -->
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <version>4.13.2</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <sourceDirectory>${project.basedir}/../sample/core/src/main/java</sourceDirectory>
+        <testSourceDirectory>${project.basedir}/../sample/core/src/test/java</testSourceDirectory>
+        <resources>
+            <resource>
+                <directory>${project.basedir}/../sample/core/src/main/resources</directory>
+            </resource>
+        </resources>
+        <testResources>
+            <testResource>
+                <directory>${project.basedir}/../sample/core/src/test/resources</directory>
+            </testResource>
+        </testResources>
+        <plugins>
+            <!-- Pinned so this pom uses the exact same plugin set as
+                 the project under test (keeps the offline package
+                 sufficient for this method too). -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.8.1</version>
+            </plugin>
+            <plugin>
+                <groupId>org.pitest</groupId>
+                <artifactId>pitest-maven</artifactId>
+                <version>1.17.4</version>
+                <configuration>
+                    <targetClasses>
+                        <param>com.example.core.*</param>
+                    </targetClasses>
+                    <targetTests>
+                        <param>com.example.core.*</param>
+                    </targetTests>
+                    <outputFormats>
+                        <param>HTML</param>
+                        <param>XML</param>
+                    </outputFormats>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
