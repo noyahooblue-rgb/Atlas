@@ -2,7 +2,8 @@
 
 退出码约定（三个子命令一致）：
   0  正常（verify 全部一致 / tally 对账通过 / diffstat 统计完成）
-  1  检查不通过（verify 有差异 / tally 对不上或零用例）
+  1  检查不通过（verify 有差异 / tally 对不上或零用例 /
+     diffstat 有未声明改动；verify 的「只差审批块」不算不通过）
   2  参数错误、读文件错误等预期内失败（不打印堆栈）
 """
 
@@ -60,6 +61,11 @@ def build_parser():
     p_snap.add_argument("--label", default=None, help="清单说明文字")
     p_snap.add_argument("--exclude", action="append", default=[],
                         help="排除模式，可多次使用，如 --exclude target/")
+    p_snap.add_argument("--strip-fenced", action="append", default=[],
+                        metavar="NAME",
+                        help="记录正文指纹时剥离 info 字符串为 NAME 的围栏"
+                             "代码块（如 stage-approvals），可多次使用；"
+                             "规则写进清单，verify 自动执行")
 
     p_verify = sub.add_parser("verify", parents=[common],
                               help="按清单复核当前文件")
@@ -80,11 +86,18 @@ def build_parser():
                             help="git 工作区改动量统计（只读）")
     p_diff.add_argument("paths", nargs="+", help="git 工作区路径（可多个）")
     p_diff.add_argument("--base", default="HEAD",
-                        help="行数统计基线，默认 HEAD")
+                        help="行数统计基线（单个版本引用），默认 HEAD；"
+                             "不能以 - 开头")
     p_diff.add_argument("--include", action="append", default=[],
                         help="只统计命中此模式的文件，可多次使用")
     p_diff.add_argument("--exclude", action="append", default=[],
                         help="排除命中此模式的文件，可多次使用")
+    p_diff.add_argument("--declared", default=None, metavar="FILE",
+                        help="声明清单文件：实际改动不在声明内时列为"
+                             "未声明改动并退出 1")
+    p_diff.add_argument("--java-classes", action="store_true",
+                        help="把 src/main/java/ 下的改动 .java 文件转成"
+                             "全限定类名，逗号分隔输出一行")
     return parser
 
 
@@ -96,7 +109,7 @@ def main(argv=None):
         if args.command == "snapshot":
             return fingerprint.run_snapshot(
                 args.paths, args.output, args.label, args.exclude,
-                args.json, _out)
+                args.json, _out, strip_fenced=args.strip_fenced)
         if args.command == "verify":
             return fingerprint.run_verify(
                 args.manifest, args.base, args.json, _out)
@@ -110,7 +123,8 @@ def main(argv=None):
         if args.command == "diffstat":
             return diffstat_mod.run_diffstat(
                 args.paths, args.base, args.include, args.exclude,
-                args.json, _out, _err)
+                args.json, _out, _err, declared_path=args.declared,
+                java_classes=args.java_classes)
     except PrecheckError as exc:
         _err("错误：%s" % exc)
         return 2

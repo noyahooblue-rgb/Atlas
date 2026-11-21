@@ -62,6 +62,27 @@ SUITE_EMPTY = """<?xml version="1.0" encoding="UTF-8"?>
 <testsuite name="com.example.Empty" tests="0" failures="0" errors="0" skipped="0"/>
 """
 
+SUITE_ATTR_MISMATCH = """<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.example.MismatchTest" tests="5" failures="0" errors="0" skipped="0">
+  <testcase classname="com.example.MismatchTest" name="a"/>
+  <testcase classname="com.example.MismatchTest" name="b"/>
+  <testcase classname="com.example.MismatchTest" name="c"/>
+  <testcase classname="com.example.MismatchTest" name="d"/>
+</testsuite>
+"""
+
+SUITE_FLAKY = """<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.example.FlakyTest" tests="3" failures="0" errors="0" skipped="0">
+  <testcase classname="com.example.FlakyTest" name="steady"/>
+  <testcase classname="com.example.FlakyTest" name="flakyOne">
+    <flakyFailure message="intermittent"/>
+  </testcase>
+  <testcase classname="com.example.FlakyTest" name="rerunOne">
+    <rerunError message="again"/>
+  </testcase>
+</testsuite>
+"""
+
 
 def no_expects():
     return {"tests": None, "failures": None, "errors": None,
@@ -194,6 +215,36 @@ class TallyTests(TallyTestBase):
         self.assertEqual(payload["totals"]["tests"], 4)
         self.assertEqual(payload["classes"][0]["failures"], 1)
         self.assertFalse(payload["zero_cases"])
+
+    def test_suite_attribute_mismatch_warns_but_passes(self):
+        path = self.write("TEST-mismatch.xml", SUITE_ATTR_MISMATCH)
+        result = junit_tally.tally([path])
+        self.assertEqual(result["totals"]["tests"], 4)
+        self.assertEqual(len(result["attribute_mismatches"]), 1)
+        item = result["attribute_mismatches"][0]
+        self.assertEqual(item["metric"], "tests")
+        self.assertEqual(item["claimed"], 5)
+        self.assertEqual(item["actual"], 4)
+        self.assertTrue(any("对不上" in w and "声称 5" in w
+                            and "实际 4" in w
+                            for w in result["warnings"]))
+        # 只是警告，不改退出码
+        code, _text = self.tally_run([path])
+        self.assertEqual(code, 0)
+
+    def test_flaky_cases_counted_and_warned(self):
+        path = self.write("TEST-flaky.xml", SUITE_FLAKY)
+        result = junit_tally.tally([path])
+        self.assertEqual(result["totals"],
+                         {"tests": 3, "failures": 0, "errors": 0,
+                          "skipped": 0})
+        self.assertEqual(result["flaky_cases"], 2)
+        self.assertTrue(any("重跑后才通过" in w
+                            for w in result["warnings"]))
+        code, text = self.tally_run([path], as_json=True)
+        self.assertEqual(code, 0)
+        payload = json.loads(text)
+        self.assertEqual(payload["flaky_cases"], 2)
 
 
 class TallyCliErrorTests(TallyTestBase):

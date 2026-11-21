@@ -41,7 +41,8 @@ class FingerprintTestBase(unittest.TestCase):
         manifest = os.path.join(self.root, "manifest.json")
         code = fingerprint.run_snapshot(
             list(specs), manifest, kwargs.get("label"),
-            kwargs.get("excludes", []), False, out)
+            kwargs.get("excludes", []), False, out,
+            strip_fenced=kwargs.get("strip_fenced", []))
         self.assertEqual(code, 0)
         return manifest
 
@@ -240,8 +241,169 @@ class SnapshotVerifyTests(FingerprintTestBase):
         self.assertEqual(paths.count("a.txt"), 1)
 
 
-class CliErrorTests(FingerprintTestBase):
+DOC_V1 = (b"# Spec\n"
+          b"body line one\n"
+          b"body line two\n"
+          b"```stage-approvals\n"
+          b"approved by Alice 2026-01-01\n"
+          b"```\n")
 
+
+class StripFencedTests(FingerprintTestBase):
+    """M2：正文指纹（剥离审批块）。"""
+
+    def snap(self, rel="doc.md", data=DOC_V1):
+        path = self.write(rel, data)
+        return self.snapshot(path, strip_fenced=["stage-approvals"])
+
+    def test_approval_block_only_change_is_ok(self):
+        manifest = self.snap()
+        self.write("doc.md", DOC_V1.replace(
+            b"approved by Alice 2026-01-01",
+            b"approved by Bob 2026-01-02"))
+        code, text = self.verify(manifest)
+        self.assertEqual(code, 0)
+        self.assertIn("只差审批块", text)
+        self.assertIn("doc.md", text)
+
+    def test_manifest_records_body_fingerprint_and_blocks(self):
+        manifest = self.snap()
+        with open(manifest, encoding="utf-8") as fh:
+            data = json.load(fh)
+        self.assertEqual(data["strip_fenced"], ["stage-approvals"])
+        entry = data["files"][0]
+        self.assertIn("body_sha256", entry)
+        self.assertNotEqual(entry["body_sha256"], entry["sha256"])
+        self.assertEqual(entry["stripped_blocks"],
+                         [{"name": "stage-approvals",
+                           "start_line": 4, "end_line": 6}])
+
+    def test_body_and_approval_change_reports_original_line(self):
+        manifest = self.snap()
+        changed = DOC_V1.replace(b"body line two", b"body line TWO")
+        changed = changed.replace(b"approved by Alice",
+                                  b"approved by Carol")
+        self.write("doc.md", changed)
+        code, text = self.verify(manifest)
+        self.assertEqual(code, 1)
+        self.assertIn("实质内容变化", text)
+        self.assertIn("第 3 行", text)
+
+    def test_diff_line_after_block_counts_original_lines(self):
+        data = (b"intro\n"
+                b"```stage-approvals\n"
+                b"approved by Alice\n"
+                b"```\n"
+                b"tail line\n")
+        manifest = self.snap(data=data)
+        self.write("doc.md", data.replace(b"tail line", b"tail LINE"))
+        code, text = self.verify(manifest)
+        self.assertEqual(code, 1)
+        self.assertIn("第 5 行", text)
+
+    def test_two_approval_blocks(self):
+        data = (b"head\n"
+                b"```stage-approvals\n"
+                b"first\n"
+                b"```\n"
+                b"middle\n"
+                b"```stage-approvals\n"
+                b"second\n"
+                b"```\n")
+        manifest = self.snap(data=data)
+        with open(manifest, encoding="utf-8") as fh:
+            recorded = json.load(fh)
+        self.assertEqual(len(recorded["files"][0]["stripped_blocks"]), 2)
+        self.write("doc.md", data.replace(b"second", b"SECOND"))
+        code, text = self.verify(manifest)
+        self.assertEqual(code, 0)
+        self.assertIn("只差审批块", text)
+
+    def test_unclosed_approval_block_snapshot_exit_2(self):
+        from precheck.errors import PrecheckError
+        path = self.write("doc.md",
+                          b"body\n```stage-approvals\nnever closed\n")
+        out = Collector()
+        with self.assertRaises(PrecheckError) as ctx:
+            fingerprint.run_snapshot(
+                [path], os.path.join(self.root, "m.json"), None, [],
+                False, out, strip_fenced=["stage-approvals"])
+        self.assertIn("第 2 行", str(ctx.exception))
+
+    def test_unclosed_approval_block_verify_exit_2(self):
+        from precheck.errors import PrecheckError
+        manifest = self.snap()
+        self.write("doc.md",
+                   b"# Spec\nbody line one\nbody line two\n"
+                   b"```stage-approvals\napproved by Alice 2026-01-01\n")
+        with self.assertRaises(PrecheckError) as ctx:
+            fingerprint.run_verify(manifest, None, False, Collector())
+        self.assertIn("第 4 行", str(ctx.exception))
+
+    def test_crlf_file_approval_change(self):
+        data = DOC_V1.replace(b"\n", b"\r\n")
+        manifest = self.snap(data=data)
+        self.write("doc.md", data.replace(b"Alice", b"Bob"))
+        code, text = self.verify(manifest)
+        self.assertEqual(code, 0)
+        self.assertIn("只差审批块", text)
+
+    def test_other_language_fence_unaffected(self):
+        data = (b"# Doc\n"
+                b"```java\n"
+                b"class A {}\n"
+                b"```\n"
+                b"```stage-approvals\n"
+                b"approved by Alice\n"
+                b"```\n")
+        manifest = self.snap(data=data)
+        # 只改审批块 → 只差审批块
+        self.write("doc.md", data.replace(b"Alice", b"Bob"))
+        code, text = self.verify(manifest)
+        self.assertEqual(code, 0)
+        self.assertIn("只差审批块", text)
+        # 改 java 块内容 → 正文变了，退出 1
+        self.write("doc.md", data.replace(b"class A {}", b"class B {}"))
+        code, text = self.verify(manifest)
+        self.assertEqual(code, 1)
+        self.assertIn("实质内容变化", text)
+
+    def test_approval_block_deleted_entirely(self):
+        manifest = self.snap()
+        self.write("doc.md",
+                   b"# Spec\nbody line one\nbody line two\n")
+        code, text = self.verify(manifest)
+        self.assertEqual(code, 0)
+        self.assertIn("只差审批块", text)
+
+    def test_similar_info_string_not_stripped(self):
+        # info 字符串只是包含 NAME 子串时不算命中，不得剥离
+        data = (b"body\n"
+                b"```stage-approvals-draft\n"
+                b"draft content\n"
+                b"```\n")
+        manifest = self.snap(data=data)
+        self.write("doc.md", data.replace(b"draft content",
+                                          b"draft CHANGED"))
+        code, text = self.verify(manifest)
+        self.assertEqual(code, 1)
+        self.assertIn("实质内容变化", text)
+
+    def test_approval_marker_inside_other_block_is_content(self):
+        # ```java 块内部出现的一行 ```stage-approvals 只是内容
+        data = (b"```java\n"
+                b"String s = \"x\";\n"
+                b"```stage-approvals\n"
+                b"more code\n"
+                b"```\n")
+        manifest = self.snap(data=data)
+        self.write("doc.md", data.replace(b"more code", b"more CODE"))
+        code, text = self.verify(manifest)
+        self.assertEqual(code, 1)
+        self.assertIn("实质内容变化", text)
+
+
+class CliErrorTests(FingerprintTestBase):
     def run_cli(self, argv):
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             return cli.main(argv)

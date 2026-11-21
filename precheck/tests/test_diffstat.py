@@ -143,6 +143,200 @@ class DiffstatTests(unittest.TestCase):
         self.assertEqual(payload["repos"][0]["untracked"][0]["path"],
                          "notes.txt")
 
+    # ---- M1：--base 参数注入防护 ----
+
+    def test_base_injection_rejected_and_writes_nothing(self):
+        from precheck.errors import PrecheckError
+        target = os.path.join(self._tmp.name, "INJECTED.txt")
+        with self.assertRaises(PrecheckError):
+            self.stat(base="--output=%s" % target)
+        self.assertFalse(os.path.exists(target))
+
+    def test_base_starting_with_dash_rejected(self):
+        from precheck.errors import PrecheckError
+        for bad in ("-x", "--numstat", "--output=/tmp/evil"):
+            with self.assertRaises(PrecheckError):
+                self.stat(base=bad)
+
+    def test_git_calls_use_optional_locks_env(self):
+        captured = []
+        real_run = diffstat.subprocess.run
+
+        class FakeProc(object):
+            returncode = 0
+            stdout = b""
+            stderr = b""
+
+        def fake_run(cmd, **kwargs):
+            captured.append(kwargs.get("env") or {})
+            return FakeProc()
+
+        diffstat.subprocess.run = fake_run
+        try:
+            self.stat()
+        finally:
+            diffstat.subprocess.run = real_run
+        self.assertTrue(captured)
+        for env in captured:
+            self.assertEqual(env.get("GIT_OPTIONAL_LOCKS"), "0")
+
+    # ---- S2：只差行尾标注 ----
+
+    def test_eol_only_change_annotated(self):
+        git(self.repo, "config", "core.autocrlf", "false")
+        self.write("src/app.py", b"a\r\nb\r\nc\r\n")  # 仅行尾 LF→CRLF
+        result = self.stat()
+        self.assertEqual(len(result["modified"]), 1)
+        self.assertTrue(result["modified"][0].get("eol_only"))
+
+    def test_content_change_not_annotated_eol_only(self):
+        git(self.repo, "config", "core.autocrlf", "false")
+        self.write("src/app.py", b"a\r\nB\r\nc\r\n")  # 行尾 + 内容都变
+        result = self.stat()
+        self.assertEqual(len(result["modified"]), 1)
+        self.assertFalse(result["modified"][0].get("eol_only", False))
+
+    def test_eol_only_text_output(self):
+        git(self.repo, "config", "core.autocrlf", "false")
+        self.write("src/app.py", b"a\r\nb\r\nc\r\n")
+        lines, errs = [], []
+        code = diffstat.run_diffstat([self.repo], "HEAD", [], [], False,
+                                     lines.append, errs.append)
+        self.assertEqual(code, 0)
+        self.assertIn("只差行尾", "\n".join(lines))
+
+    # ---- M3：声明清单对账 ----
+
+    def declare(self, text):
+        path = os.path.join(self._tmp.name, "declared.txt")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return path
+
+    def run_declared(self, declared_path, excludes=None, as_json=False):
+        lines, errs = [], []
+        code = diffstat.run_diffstat(
+            [self.repo], "HEAD", [], excludes or [], as_json,
+            lines.append, errs.append, declared_path=declared_path)
+        return code, "\n".join(lines), errs
+
+    def test_declared_all_changes_covered_exit_0(self):
+        self.write("src/app.py", "a\nb\nc\nd\n")
+        self.write("new.txt", "n\n")
+        declared = self.declare("src/app.py\nnew.txt\n")
+        code, _text, _errs = self.run_declared(declared)
+        self.assertEqual(code, 0)
+
+    def test_declared_undeclared_modified_exit_1(self):
+        self.write("src/app.py", "a\nb\nc\nd\n")
+        self.write("other.py", "o\n")
+        git(self.repo, "add", "other.py")
+        git(self.repo, "commit", "-qm", "add other")
+        self.write("other.py", "o\np\n")  # 未声明的已修改文件
+        declared = self.declare("src/app.py\n")
+        code, text, _errs = self.run_declared(declared)
+        self.assertEqual(code, 1)
+        self.assertIn("未声明改动 1", text)
+        self.assertIn("other.py", text)
+
+    def test_declared_undeclared_untracked_exit_1(self):
+        self.write("stray.txt", "s\n")
+        declared = self.declare("src/app.py\n")
+        code, text, _errs = self.run_declared(declared)
+        self.assertEqual(code, 1)
+        self.assertIn("stray.txt", text)
+
+    def test_declared_glob_match(self):
+        self.write("src/app.py", "a\nb\nc\nd\n")
+        self.write("src/deep/nested.py", "n\n")
+        declared = self.declare("src/**\n")
+        code, _text, _errs = self.run_declared(declared)
+        self.assertEqual(code, 0)
+
+    def test_declared_glob_star_does_not_cross_directories(self):
+        self.write("src/deep/nested.py", "n\n")
+        declared = self.declare("src/*.py\n")
+        code, text, _errs = self.run_declared(declared)
+        self.assertEqual(code, 1)
+        self.assertIn("nested.py", text)
+
+    def test_declared_rename_old_or_new_path_counts(self):
+        git(self.repo, "mv", "src/app.py", "src/renamed.py")
+        declared_old = self.declare("src/app.py\n")
+        code, _t, _e = self.run_declared(declared_old)
+        self.assertEqual(code, 0)
+        declared_new = self.declare("src/renamed.py\n")
+        code, _t, _e = self.run_declared(declared_new)
+        self.assertEqual(code, 0)
+
+    def test_declared_file_missing_exit_2(self):
+        ghost = os.path.join(self._tmp.name, "no-such-declared.txt")
+        code, _text, errs = self.run_declared(ghost)
+        self.assertEqual(code, 2)
+        self.assertTrue(errs)
+
+    def test_declared_backslash_paths_and_comments(self):
+        self.write("src/app.py", "a\nb\nc\nd\n")
+        declared = self.declare("# 本轮声明\n\nsrc\\app.py\n")
+        code, _text, _errs = self.run_declared(declared)
+        self.assertEqual(code, 0)
+
+    def test_declared_but_unchanged_warns_only(self):
+        self.write("src/app.py", "a\nb\nc\nd\n")
+        declared = self.declare("src/app.py\nuntouched.txt\n")
+        code, text, _errs = self.run_declared(declared)
+        self.assertEqual(code, 0)
+        self.assertIn("声明未改动 1", text)
+        self.assertIn("untouched.txt", text)
+
+    def test_declared_exclude_applied_first(self):
+        self.write("target/gen.py", "g\n")  # 未跟踪构建产物
+        declared = self.declare("src/app.py\n")
+        code, _text, _errs = self.run_declared(
+            declared, excludes=["target/"])
+        self.assertEqual(code, 0)
+
+    def test_declared_json_lists(self):
+        self.write("stray.txt", "s\n")
+        declared = self.declare("src/app.py\nuntouched.txt\n")
+        code, text, _errs = self.run_declared(declared, as_json=True)
+        self.assertEqual(code, 1)
+        payload = json.loads(text)
+        repo = payload["repos"][0]
+        self.assertEqual([u["path"] for u in repo["undeclared_changes"]],
+                         ["stray.txt"])
+        self.assertEqual(repo["declared_not_changed"],
+                         ["src/app.py", "untouched.txt"])
+
+    # ---- S3：--java-classes ----
+
+    def test_java_classes_conversion(self):
+        self.write("src/main/java/com/example/Foo.java",
+                   "package com.example;\nclass Foo {}\n")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-qm", "add foo")
+        self.write("src/main/java/com/example/Foo.java",
+                   "package com.example;\nclass Foo { int x; }\n")
+        self.write("src/main/java/com/example/Bar.java",
+                   "package com.example;\nclass Bar {}\n")  # 未跟踪
+        self.write("src/test/java/com/example/FooTest.java",
+                   "class FooTest {}\n")  # 不在 src/main/java 下
+        self.write("src/main/java/com/example/readme.txt", "x\n")
+        result = diffstat.repo_diffstat(self.repo, "HEAD", [], [],
+                                        java_classes=True)
+        self.assertEqual(result["java_classes"],
+                         ["com.example.Bar", "com.example.Foo"])
+
+    def test_java_classes_text_output_one_line(self):
+        self.write("src/main/java/org/demo/App.java",
+                   "package org.demo;\nclass App {}\n")
+        lines, errs = [], []
+        code = diffstat.run_diffstat([self.repo], "HEAD", [], [], False,
+                                     lines.append, errs.append,
+                                     java_classes=True)
+        self.assertEqual(code, 0)
+        self.assertIn("org.demo.App", lines)
+
 
 class DiffstatCliErrorTests(unittest.TestCase):
     def setUp(self):
