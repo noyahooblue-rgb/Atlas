@@ -15,8 +15,9 @@ GIT_OPTIONAL_LOCKS=0，避免 status 刷新索引时写 .git/index。
 
 可选 --declared FILE 做「声明清单对账」：实际改动（先经过
 --include/--exclude 过滤）凡不在声明里的列为未声明改动，退出 1；
-声明了却没改的只提示。可选 --java-classes 把 src/main/java/ 下的
-改动 .java 文件转成全限定类名一行输出。
+声明了却没改的只提示。可选 --java-classes 把路径中任意位置出现
+src/main/java/ 片段的改动 .java 文件转成全限定类名一行输出，
+并按模块（片段之前的路径部分）再分组输出。
 """
 
 import json
@@ -262,14 +263,44 @@ def reconcile(changed, declared):
     return undeclared, not_changed
 
 
-JAVA_SRC_PREFIX = "src/main/java/"
+JAVA_SRC_SEGMENT = "src/main/java/"
+
+
+def _split_java_path(path):
+    """按 src/main/java/ 片段拆分 .java 路径，返回 (模块, 类相对路径)。
+
+    片段可出现在路径任意位置：位于开头（模块记为 "."），或前面带
+    模块目录（如 mod-a/src/main/java/...，模块为 "mod-a"，可多层）。
+    片段在同一路径出现多次时以最后一次为准。src/test/java/ 不含
+    该片段，天然排除。不合约定返回 None。
+    """
+    if not path.endswith(".java"):
+        return None
+    idx = path.rfind("/" + JAVA_SRC_SEGMENT)
+    if idx >= 0:
+        return path[:idx] or ".", path[idx + 1 + len(JAVA_SRC_SEGMENT):]
+    if path.startswith(JAVA_SRC_SEGMENT):
+        return ".", path[len(JAVA_SRC_SEGMENT):]
+    return None
 
 
 def java_class_name(path):
-    """src/main/java/ 下的 .java 路径转全限定类名；不合约定返回 None。"""
-    if path.startswith(JAVA_SRC_PREFIX) and path.endswith(".java"):
-        return path[len(JAVA_SRC_PREFIX):-len(".java")].replace("/", ".")
-    return None
+    """含 src/main/java/ 片段的 .java 路径转全限定类名；不合约定返回 None。"""
+    parts = _split_java_path(path)
+    if parts is None:
+        return None
+    return parts[1][:-len(".java")].replace("/", ".")
+
+
+def java_class_module(path):
+    """含 src/main/java/ 片段的 .java 路径所属模块；不合约定返回 None。
+
+    模块是片段之前的路径部分；片段位于路径开头时模块为 "."。
+    """
+    parts = _split_java_path(path)
+    if parts is None:
+        return None
+    return parts[0]
 
 
 def repo_diffstat(repo, base, includes, excludes, declared=None,
@@ -362,15 +393,18 @@ def repo_diffstat(repo, base, includes, excludes, declared=None,
         result["declared_not_changed"] = not_changed
     if java_classes:
         names = set()
-        for item in modified + added:
+        by_module = {}
+        for item in modified + added + untracked:
             name = java_class_name(item["path"])
             if name:
                 names.add(name)
-        for item in untracked:
-            name = java_class_name(item["path"])
-            if name:
-                names.add(name)
+                module = java_class_module(item["path"])
+                by_module.setdefault(module, set()).add(name)
         result["java_classes"] = sorted(names)
+        result["java_classes_by_module"] = {
+            module: sorted(by_module[module])
+            for module in sorted(by_module)
+        }
     return result
 
 
@@ -454,6 +488,11 @@ def run_diffstat(repos, base, includes, excludes, as_json, out, err,
                     out("    %s" % pattern)
             if java_classes and r.get("java_classes"):
                 out(",".join(r["java_classes"]))
+                for module in sorted(r.get("java_classes_by_module",
+                                           {})):
+                    out("模块 %s：%s" % (
+                        module,
+                        ",".join(r["java_classes_by_module"][module])))
         for message in errors:
             err("错误：%s" % message)
     if errors:

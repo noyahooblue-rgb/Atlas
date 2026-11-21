@@ -337,6 +337,87 @@ class DiffstatTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("org.demo.App", lines)
 
+    def test_java_classes_multi_module_paths(self):
+        # 根模块：src/main/java/ 位于仓库根（已跟踪文件改动）
+        self.write("src/main/java/com/root/Root.java",
+                   "package com.root;\nclass Root {}\n")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-qm", "add root class")
+        self.write("src/main/java/com/root/Root.java",
+                   "package com.root;\nclass Root { int x; }\n")
+        # 一层模块与两层模块（未跟踪）
+        self.write("mod-a/src/main/java/com/a/A.java",
+                   "package com.a;\nclass A {}\n")
+        self.write("x/y/src/main/java/com/xy/XY.java",
+                   "package com.xy;\nclass XY {}\n")
+        # 模块下的测试源码不算
+        self.write("mod-a/src/test/java/com/a/ATest.java",
+                   "class ATest {}\n")
+        result = diffstat.repo_diffstat(self.repo, "HEAD", [], [],
+                                        java_classes=True)
+        self.assertEqual(result["java_classes"],
+                         ["com.a.A", "com.root.Root", "com.xy.XY"])
+        self.assertEqual(result["java_classes_by_module"], {
+            ".": ["com.root.Root"],
+            "mod-a": ["com.a.A"],
+            "x/y": ["com.xy.XY"],
+        })
+
+    def test_java_classes_module_group_text_output(self):
+        self.write("mod-a/src/main/java/com/a/A.java",
+                   "package com.a;\nclass A {}\n")
+        self.write("src/main/java/com/root/Root.java",
+                   "package com.root;\nclass Root {}\n")
+        lines, errs = [], []
+        code = diffstat.run_diffstat([self.repo], "HEAD", [], [], False,
+                                     lines.append, errs.append,
+                                     java_classes=True)
+        self.assertEqual(code, 0)
+        self.assertIn("com.a.A,com.root.Root", lines)  # 原有汇总行不变
+        self.assertIn("模块 .：com.root.Root", lines)
+        self.assertIn("模块 mod-a：com.a.A", lines)
+
+    def test_java_classes_deleted_file_excluded(self):
+        self.write("src/main/java/com/example/Gone.java",
+                   "package com.example;\nclass Gone {}\n")
+        self.write("mod-a/src/main/java/com/a/Kept.java",
+                   "package com.a;\nclass Kept {}\n")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-qm", "add classes")
+        os.remove(os.path.join(
+            self.repo, "src", "main", "java", "com", "example",
+            "Gone.java"))
+        self.write("mod-a/src/main/java/com/a/Kept.java",
+                   "package com.a;\nclass Kept { int x; }\n")
+        result = diffstat.repo_diffstat(self.repo, "HEAD", [], [],
+                                        java_classes=True)
+        self.assertEqual([i["path"] for i in result["deleted"]],
+                         ["src/main/java/com/example/Gone.java"])
+        self.assertEqual(result["java_classes"], ["com.a.Kept"])
+        self.assertEqual(result["java_classes_by_module"],
+                         {"mod-a": ["com.a.Kept"]})
+
+    def test_java_class_name_last_segment_wins(self):
+        name = diffstat.java_class_name
+        self.assertEqual(name("src/main/java/com/example/Foo.java"),
+                         "com.example.Foo")
+        self.assertEqual(name("mod-a/src/main/java/com/a/A.java"),
+                         "com.a.A")
+        self.assertEqual(name("a/b/src/main/java/com/xy/XY.java"),
+                         "com.xy.XY")
+        # 同一路径出现两次片段时以最后一次为准
+        self.assertEqual(
+            name("a/src/main/java/b/src/main/java/com/deep/Deep.java"),
+            "com.deep.Deep")
+        self.assertEqual(
+            diffstat.java_class_module(
+                "a/src/main/java/b/src/main/java/com/deep/Deep.java"),
+            "a/src/main/java/b")
+        self.assertIsNone(name("src/test/java/com/example/T.java"))
+        self.assertIsNone(name("mod-a/src/test/java/com/a/T.java"))
+        self.assertIsNone(name("xsrc/main/java/com/example/F.java"))
+        self.assertIsNone(name("src/main/java/com/example/readme.txt"))
+
 
 class DiffstatCliErrorTests(unittest.TestCase):
     def setUp(self):

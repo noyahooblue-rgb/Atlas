@@ -96,8 +96,9 @@ def build_parser():
                         help="声明清单文件：实际改动不在声明内时列为"
                              "未声明改动并退出 1")
     p_diff.add_argument("--java-classes", action="store_true",
-                        help="把 src/main/java/ 下的改动 .java 文件转成"
-                             "全限定类名，逗号分隔输出一行")
+                        help="把路径含 src/main/java/ 片段（任意模块下）"
+                             "的改动 .java 文件转成全限定类名，逗号分隔"
+                             "输出一行，并按模块分组再逐行输出")
     return parser
 
 

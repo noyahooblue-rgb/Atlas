@@ -129,9 +129,16 @@ python -m precheck junit-tally TEST-a.xml TEST-b.xml --json
 `--json` 输出里包含这两张清单。声明文件不存在或读不了时
 退出 2。
 
-`--java-classes` 把改动和未跟踪文件里位于 `src/main/java/` 下的
-`.java` 路径转成全限定类名，逗号分隔输出一行，方便直接填进
-PIT 的 `-DtargetClasses`（只做这一个路径约定）。
+`--java-classes` 把改动和未跟踪文件里路径含 `src/main/java/`
+片段的 `.java` 路径转成全限定类名，逗号分隔输出一行，方便直接
+填进 PIT 的 `-DtargetClasses`。片段可位于路径任意位置：仓库根
+目录下（`src/main/java/...`）或任意模块目录下
+（`<模块>/src/main/java/...`，模块可多层），多模块工程同样适用；
+同一路径出现多次片段时以最后一次为准；`src/test/java/` 不算。
+汇总行之后还会按模块逐行再输出一遍（根目录文件的模块记为 `.`），
+格式如 `模块 mod-a：com.a.A,com.a.B`；`--json` 里除原有的
+`java_classes` 汇总清单外，另有 `java_classes_by_module` 按模块
+分组。已删除的 `.java` 文件不输出。
 
 例子：
 
@@ -162,7 +169,7 @@ python -m precheck diffstat . --java-classes
 
 ## 测试
 
-共 83 个 unittest 用例，覆盖：只改行尾、只多末尾空行、BOM 增删、
+共 87 个 unittest 用例，覆盖：只改行尾、只多末尾空行、BOM 增删、
 中文路径与空格路径、GBK 字节文件名、二进制文件、同名测试类、
 重复报告去重、空报告目录、testsuites 嵌套、损坏 XML、非 git
 目录、未跟踪二进制文件等场景，以及本次返工新增的：`--base`
@@ -170,7 +177,8 @@ python -m precheck diffstat . --java-classes
 未闭合/CRLF/其他语言围栏块/整块删除、声明清单对账（未声明的
 已修改与未跟踪文件、通配、重命名、反斜杠路径、声明文件缺失）、
 testsuite 属性对不上警告、flaky 用例计数、只差行尾标注、
-`--java-classes` 转换。在仓库根目录执行一条命令跑完：
+`--java-classes` 转换（含多模块路径：根模块、一层与两层模块、
+按模块分组输出、已删除类不输出）。在仓库根目录执行一条命令跑完：
 
 ```bat
 python -m unittest discover -s precheck/tests -v
