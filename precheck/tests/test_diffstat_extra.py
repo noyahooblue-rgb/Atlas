@@ -60,8 +60,8 @@ class DeclaredPatternTests(unittest.TestCase):
         self.assertTrue(self.check("src/*.py", "src/y.py"))
 
     def test_backslash_and_dir_suffix(self):
-        self.assertTrue(self.check("docs\guide\a.md", "docs/guide/a.md"))
-        self.assertTrue(self.check("build\", "build/out/x.txt"))
+        self.assertTrue(self.check("docs\\guide\\a.md", "docs/guide/a.md"))
+        self.assertTrue(self.check("build\\", "build/out/x.txt"))
         self.assertTrue(self.check("./README.md", "README.md"))
 
     def test_java_class_name_rules(self):
