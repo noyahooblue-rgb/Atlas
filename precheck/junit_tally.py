@@ -10,7 +10,11 @@ tests / failures / errors / skipped 并给出总计。
 - 同名测试类出现在多个报告文件时分别计数并提示；
 - 空目录或合计零用例：明确报「零用例」，退出码 1，绝不当通过；
 - XML 损坏或根元素不是 JUnit：报错退出 2，不打印堆栈；
-- --expect-* 与声称值比对，不一致退出 1 并指出差多少。
+- --expect-* 与声称值比对，不一致退出 1 并指出差多少；
+- testsuite 上的 tests/failures/errors/skipped 属性与实际 testcase
+  统计对不上时警告（不改退出码）；
+- 含 flakyFailure / flakyError / rerunFailure / rerunError 子元素的用例
+  单独计数（flaky）并警告「重跑后才通过」（不改退出码）。
 """
 
 import hashlib
@@ -21,6 +25,7 @@ import xml.etree.ElementTree as ET
 from .errors import PrecheckError
 
 COUNT_KEYS = ("tests", "failures", "errors", "skipped")
+RERUN_TAGS = ("flakyFailure", "flakyError", "rerunFailure", "rerunError")
 
 
 def _safe_int(value):
@@ -30,8 +35,16 @@ def _safe_int(value):
         return 0
 
 
-def parse_report(path):
-    """解析一个报告文件，返回 [(类名, {计数...}), ...]（按 testsuite）。"""
+def _local(tag):
+    return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
+
+
+def parse_report_detail(path):
+    """解析一个报告文件，返回 [dict(name, counts, flaky, attr_mismatch), ...]。
+
+    attr_mismatch：[(属性名, 属性值, 实际统计值), ...]，只在属性存在、
+    能解析为整数且与 testcase 实际统计不同时记录。
+    """
     try:
         tree = ET.parse(path)
     except ET.ParseError as exc:
@@ -39,38 +52,56 @@ def parse_report(path):
     except OSError as exc:
         raise PrecheckError("无法读取报告 %s：%s" % (path, exc))
     root = tree.getroot()
-    tag = root.tag.rsplit("}", 1)[-1]  # 容忍命名空间前缀
+    tag = _local(root.tag)  # 容忍命名空间前缀
     if tag == "testsuite":
         suite_elems = [root]
     elif tag == "testsuites":
-        suite_elems = [e for e in root.iter()
-                       if e.tag.rsplit("}", 1)[-1] == "testsuite"]
+        suite_elems = [e for e in root.iter() if _local(e.tag) == "testsuite"]
     else:
         raise PrecheckError(
             "不是 JUnit 报告（根元素是 <%s>）：%s" % (tag, path))
     suites = []
     for elem in suite_elems:
-        cases = [c for c in elem
-                 if c.tag.rsplit("}", 1)[-1] == "testcase"]
+        cases = [c for c in elem if _local(c.tag) == "testcase"]
+        flaky = 0
+        mismatch = []
         if cases:
             counts = {"tests": len(cases), "failures": 0,
                       "errors": 0, "skipped": 0}
             for case in cases:
-                child_tags = [ch.tag.rsplit("}", 1)[-1] for ch in case]
+                child_tags = [_local(ch.tag) for ch in case]
                 if "failure" in child_tags:
                     counts["failures"] += 1
                 if "error" in child_tags:
                     counts["errors"] += 1
                 if "skipped" in child_tags:
                     counts["skipped"] += 1
+                if any(t in RERUN_TAGS for t in child_tags):
+                    flaky += 1
+            for key in COUNT_KEYS:
+                raw = elem.get(key)
+                if raw is None:
+                    continue
+                try:
+                    claimed = int(raw)
+                except ValueError:
+                    continue
+                if claimed != counts[key]:
+                    mismatch.append((key, claimed, counts[key]))
         else:
             # 没有 testcase 子元素的报告退回用 testsuite 属性计数
             counts = {k: _safe_int(elem.get(k)) for k in COUNT_KEYS}
         name = elem.get("name")
         if not name and cases:
             name = cases[0].get("classname")
-        suites.append((name or "(未命名)", counts))
+        suites.append({"name": name or "(未命名)", "counts": counts,
+                       "flaky": flaky, "attr_mismatch": mismatch})
     return suites
+
+
+def parse_report(path):
+    """解析一个报告文件，返回 [(类名, {计数...}), ...]（按 testsuite）。"""
+    return [(s["name"], s["counts"]) for s in parse_report_detail(path)]
 
 
 def discover(paths):
@@ -91,12 +122,14 @@ def discover(paths):
 
 
 def tally(paths):
-    """汇总，返回 dict：files / classes / totals / duplicates / warnings。"""
+    """汇总，返回 dict：files / classes / totals / duplicates / warnings 等。"""
     files = discover(paths)
     seen_hashes = {}
     duplicates = []
     per_file = []
     class_rows = {}  # (类名, 文件) -> counts
+    attr_warnings = []
+    flaky_rows = []
     for path in files:
         try:
             with open(path, "rb") as fh:
@@ -107,21 +140,33 @@ def tally(paths):
             duplicates.append({"file": path, "same_as": seen_hashes[digest]})
             continue
         seen_hashes[digest] = path
-        suites = parse_report(path)
+        suites = parse_report_detail(path)
         file_counts = {k: 0 for k in COUNT_KEYS}
-        for class_name, counts in suites:
+        file_flaky = 0
+        for suite in suites:
+            class_name, counts = suite["name"], suite["counts"]
             for k in COUNT_KEYS:
                 file_counts[k] += counts[k]
             key = (class_name, path)
             row = class_rows.setdefault(key, {k: 0 for k in COUNT_KEYS})
             for k in COUNT_KEYS:
                 row[k] += counts[k]
-        per_file.append({"file": path, "counts": file_counts})
+            file_flaky += suite["flaky"]
+            if suite["flaky"]:
+                flaky_rows.append({"class": class_name, "file": path,
+                                   "flaky": suite["flaky"]})
+            for attr, claimed, actual in suite["attr_mismatch"]:
+                attr_warnings.append({"class": class_name, "file": path,
+                                      "attribute": attr, "claimed": claimed,
+                                      "actual": actual})
+        per_file.append({"file": path, "counts": file_counts,
+                         "flaky": file_flaky})
 
     totals = {k: 0 for k in COUNT_KEYS}
     for item in per_file:
         for k in COUNT_KEYS:
             totals[k] += item["counts"][k]
+    flaky_total = sum(item["flaky"] for item in per_file)
 
     classes = [{"class": name, "file": path, "counts": counts}
                for (name, path), counts in sorted(class_rows.items())]
@@ -138,9 +183,21 @@ def tally(paths):
     for dup in duplicates:
         warnings.append("重复报告已去重：%s 与 %s 内容相同" % (
             dup["file"], dup["same_as"]))
+    for w in attr_warnings:
+        warnings.append(
+            "属性与用例统计不符：%s（%s）的 testsuite 属性 %s=%d，"
+            "按 testcase 实际统计为 %d，已按实际统计计数"
+            % (w["class"], w["file"], w["attribute"], w["claimed"],
+               w["actual"]))
+    for f in flaky_rows:
+        warnings.append(
+            "重跑后才通过：%s（%s）有 %d 个用例带 flaky/rerun 记录"
+            % (f["class"], f["file"], f["flaky"]))
 
     return {"files": per_file, "classes": classes, "totals": totals,
             "duplicates": duplicates, "warnings": warnings,
+            "attribute_mismatches": attr_warnings,
+            "flaky": flaky_rows, "flaky_total": flaky_total,
             "files_found": len(files)}
 
 
@@ -161,12 +218,15 @@ def run_tally(paths, expects, as_json, out):
     if as_json:
         out(json.dumps({
             "totals": totals,
-            "files": [{"file": f["file"], **f["counts"]}
+            "files": [{"file": f["file"], "flaky": f["flaky"], **f["counts"]}
                       for f in result["files"]],
             "classes": [{"class": c["class"], "file": c["file"],
                          **c["counts"]} for c in result["classes"]],
             "duplicates": result["duplicates"],
             "warnings": result["warnings"],
+            "attribute_mismatches": result["attribute_mismatches"],
+            "flaky": result["flaky"],
+            "flaky_total": result["flaky_total"],
             "expect_mismatches": mismatches,
             "zero_cases": zero_cases,
         }, ensure_ascii=False))
@@ -189,6 +249,8 @@ def run_tally(paths, expects, as_json, out):
         t = totals
         out("总计：tests=%d failures=%d errors=%d skipped=%d"
             % (t["tests"], t["failures"], t["errors"], t["skipped"]))
+        if result["flaky_total"]:
+            out("重跑后才通过（flaky）：%d 个用例" % result["flaky_total"])
         for warning in result["warnings"]:
             out("提示：%s" % warning)
         for m in mismatches:

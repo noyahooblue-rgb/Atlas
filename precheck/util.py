@@ -2,6 +2,7 @@
 
 import fnmatch
 import os
+import re
 
 
 def to_posix(path):
@@ -45,3 +46,60 @@ def match_any(rel_posix, patterns):
         if fnmatch.fnmatch(rel_posix, "*/" + core):
             return True
     return False
+
+
+def normalize_declared(pattern):
+    """声明清单里的一行：去首尾空白，反斜杠转 /，去掉开头的 ./ 与 /。"""
+    p = pattern.strip().replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    return p.lstrip("/")
+
+
+def declared_to_regex(pattern):
+    """把声明清单模式转成正则（对相对仓库根的完整 posix 路径整串匹配）。
+
+    - ``**`` 跨目录（可为零层）："a/**/b" 命中 a/b、a/x/y/b；"a/**" 命中 a 下全部；
+    - ``*`` 与 ``?`` 不跨 ``/``；
+    - ``[...]`` 为字符类，``[!...]`` 为取反；
+    - 以 ``/`` 结尾表示整个目录（等价于 "目录/**"）；
+    - 区分大小写。
+    """
+    p = normalize_declared(pattern)
+    if p.endswith("/"):
+        p += "**"
+    out = []
+    i, n = 0, len(p)
+    while i < n:
+        ch = p[i]
+        if ch == "*":
+            if i + 1 < n and p[i + 1] == "*":
+                i += 2
+                if i < n and p[i] == "/":
+                    i += 1
+                    out.append("(?:.*/)?")
+                else:
+                    out.append(".*")
+                continue
+            out.append("[^/]*")
+        elif ch == "?":
+            out.append("[^/]")
+        elif ch == "[":
+            start = i + 1
+            if start < n and p[start] in "!^":
+                start += 1
+            if start < n and p[start] == "]":
+                start += 1
+            j = p.find("]", start)
+            if j == -1:
+                out.append(re.escape(ch))
+            else:
+                body = p[i + 1:j]
+                if body.startswith("!"):
+                    body = "^" + body[1:]
+                out.append("[" + body.replace("\\", "\\\\") + "]")
+                i = j
+        else:
+            out.append(re.escape(ch))
+        i += 1
+    return re.compile("".join(out) + r"\Z", re.DOTALL)

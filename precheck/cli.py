@@ -2,7 +2,8 @@
 
 退出码约定（三个子命令一致）：
   0  正常（verify 全部一致 / tally 对账通过 / diffstat 统计完成）
-  1  检查不通过（verify 有差异 / tally 对不上或零用例）
+  1  检查不通过（verify 有差异 / tally 对不上或零用例 /
+     diffstat --declared 有未声明改动）
   2  参数错误、读文件错误等预期内失败（不打印堆栈）
 """
 
@@ -60,6 +61,11 @@ def build_parser():
     p_snap.add_argument("--label", default=None, help="清单说明文字")
     p_snap.add_argument("--exclude", action="append", default=[],
                         help="排除模式，可多次使用，如 --exclude target/")
+    p_snap.add_argument("--strip-fenced", action="append", default=[],
+                        metavar="NAME",
+                        help="比对正文时剥离 info 字符串为 NAME 的围栏块"
+                             "（审批块），可多次使用，如 "
+                             "--strip-fenced stage-approvals")
 
     p_verify = sub.add_parser("verify", parents=[common],
                               help="按清单复核当前文件")
@@ -85,6 +91,12 @@ def build_parser():
                         help="只统计命中此模式的文件，可多次使用")
     p_diff.add_argument("--exclude", action="append", default=[],
                         help="排除命中此模式的文件，可多次使用")
+    p_diff.add_argument("--declared", default=None, metavar="FILE",
+                        help="本轮声明要改的文件清单（UTF-8，每行一个路径，"
+                             "支持通配与 **，# 为注释）；有未声明改动退出 1")
+    p_diff.add_argument("--java-classes", action="store_true",
+                        help="把 src/main/java/ 下的 .java 改动转成全限定"
+                             "类名，逗号分隔输出一行（填 PIT -DtargetClasses）")
     return parser
 
 
@@ -96,7 +108,7 @@ def main(argv=None):
         if args.command == "snapshot":
             return fingerprint.run_snapshot(
                 args.paths, args.output, args.label, args.exclude,
-                args.json, _out)
+                args.json, _out, args.strip_fenced)
         if args.command == "verify":
             return fingerprint.run_verify(
                 args.manifest, args.base, args.json, _out)
@@ -110,7 +122,7 @@ def main(argv=None):
         if args.command == "diffstat":
             return diffstat_mod.run_diffstat(
                 args.paths, args.base, args.include, args.exclude,
-                args.json, _out, _err)
+                args.json, _out, _err, args.declared, args.java_classes)
     except PrecheckError as exc:
         _err("错误：%s" % exc)
         return 2
