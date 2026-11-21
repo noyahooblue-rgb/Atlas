@@ -1,0 +1,489 @@
+THIRD-PARTY NOTICES — PIT offline package (pit-offline-repo.zip)
+========================================================================
+
+This package redistributes the third-party artifacts listed below,
+collected per offline-manifest.tsv (611 files). For each artifact the
+license name is taken verbatim from the <licenses><name> field of the
+artifact's own POM as published on Maven Central. Artifacts whose POM
+declares no license are marked 未声明 (not declared); no license has
+been guessed or inferred for them.
+
+Artifacts listed: 443
+
+antlr:antlr:2.7.7	BSD License
+aopalliance:aopalliance:1.0	Public Domain
+asm:asm:3.3.1	未声明
+asm:asm-parent:3.3.1	BSD
+avalon-framework:avalon-framework:4.1.3	未声明
+backport-util-concurrent:backport-util-concurrent:3.1	Public Domain
+classworlds:classworlds:1.1	未声明
+classworlds:classworlds:1.1-alpha-2	未声明
+com.fasterxml:oss-parent:55	The Apache Software License, Version 2.0
+com.fasterxml:oss-parent:56	The Apache Software License, Version 2.0
+com.fasterxml:oss-parent:58	The Apache Software License, Version 2.0
+com.fasterxml.jackson:jackson-base:2.17.0	The Apache Software License, Version 2.0
+com.fasterxml.jackson:jackson-bom:2.17.0	Apache License, Version 2.0
+com.fasterxml.jackson:jackson-parent:2.17	The Apache Software License, Version 2.0
+com.fasterxml.jackson.core:jackson-annotations:2.17.0	The Apache Software License, Version 2.0
+com.fasterxml.jackson.core:jackson-core:2.17.0	The Apache Software License, Version 2.0
+com.fasterxml.jackson.core:jackson-databind:2.17.0	The Apache Software License, Version 2.0
+com.fasterxml.jackson.dataformat:jackson-dataformat-xml:2.17.0	未声明
+com.fasterxml.woodstox:woodstox-core:6.6.1	The Apache License, Version 2.0
+com.google:google:1	The Apache Software License, Version 2.0
+com.google:google:5	The Apache Software License, Version 2.0
+com.google.code.findbugs:jsr305:1.3.9	The Apache Software License, Version 2.0
+com.google.code.findbugs:jsr305:2.0.1	The Apache Software License, Version 2.0
+com.google.code.findbugs:jsr305:3.0.2	The Apache Software License, Version 2.0
+com.google.collections:google-collections:1.0	The Apache Software License, Version 2.0
+com.google.errorprone:error_prone_annotations:2.1.3	Apache 2.0
+com.google.errorprone:error_prone_parent:2.1.3	Apache 2.0
+com.google.guava:guava:10.0.1	未声明
+com.google.guava:guava:25.1-android	未声明
+com.google.guava:guava-parent:10.0.1	The Apache Software License, Version 2.0
+com.google.guava:guava-parent:25.1-android	The Apache Software License, Version 2.0
+com.google.inject:guice:4.2.2	未声明
+com.google.inject:guice-parent:4.2.2	The Apache Software License, Version 2.0
+com.google.j2objc:j2objc-annotations:1.1	The Apache Software License, Version 2.0
+com.googlecode.javaewah:JavaEWAH:1.1.13	Apache 2
+com.thoughtworks.qdox:qdox:2.0-M9	The Apache Software License, Version 2.0
+com.thoughtworks.qdox:qdox:2.0.3	The Apache Software License, Version 2.0
+commons-beanutils:commons-beanutils:1.6	未声明
+commons-beanutils:commons-beanutils:1.7.0	未声明
+commons-beanutils:commons-beanutils:1.9.4	未声明
+commons-chain:commons-chain:1.1	The Apache Software License, Version 2.0
+commons-codec:commons-codec:1.11	未声明
+commons-collections:commons-collections:2.0	未声明
+commons-collections:commons-collections:2.1	未声明
+commons-collections:commons-collections:3.1	未声明
+commons-collections:commons-collections:3.2	The Apache Software License, Version 2.0
+commons-collections:commons-collections:3.2.1	未声明
+commons-collections:commons-collections:3.2.2	未声明
+commons-digester:commons-digester:1.6	未声明
+commons-digester:commons-digester:1.8	The Apache Software License, Version 2.0
+commons-io:commons-io:2.11.0	未声明
+commons-io:commons-io:2.16.1	未声明
+commons-io:commons-io:2.5	未声明
+commons-io:commons-io:2.6	未声明
+commons-lang:commons-lang:2.4	未声明
+commons-logging:commons-logging:1.0	未声明
+commons-logging:commons-logging:1.0.3	未声明
+commons-logging:commons-logging:1.1	The Apache Software License, Version 2.0
+commons-logging:commons-logging:1.2	未声明
+dom4j:dom4j:1.1	未声明
+javax.annotation:javax.annotation-api:1.2	CDDL + GPLv2 with classpath exception
+javax.annotation:jsr250-api:1.0	COMMON DEVELOPMENT AND DISTRIBUTION LICENSE (CDDL) Version 1.0
+javax.enterprise:cdi-api:1.0	未声明
+javax.inject:javax.inject:1	The Apache Software License, Version 2.0
+junit:junit:3.8.1	Common Public License Version 1.0
+junit:junit:4.13.2	Eclipse Public License 1.0
+log4j:log4j:1.2.12	未声明
+logkit:logkit:1.0.1	未声明
+net.bytebuddy:byte-buddy:1.14.9	未声明
+net.bytebuddy:byte-buddy-parent:1.14.9	Apache License, Version 2.0
+net.i2p.crypto:eddsa:0.3.0	CC0 1.0 Universal
+net.java:jvnet-parent:3	未声明
+net.sf.jopt-simple:jopt-simple:4.9	The MIT License
+org.antlr:stringtemplate:3.2.1	BSD licence
+org.apache:apache:10	The Apache Software License, Version 2.0
+org.apache:apache:11	The Apache Software License, Version 2.0
+org.apache:apache:13	The Apache Software License, Version 2.0
+org.apache:apache:16	Apache License, Version 2.0
+org.apache:apache:18	Apache License, Version 2.0
+org.apache:apache:19	Apache License, Version 2.0
+org.apache:apache:21	Apache License, Version 2.0
+org.apache:apache:23	Apache License, Version 2.0
+org.apache:apache:25	Apache License, Version 2.0
+org.apache:apache:29	Apache-2.0
+org.apache:apache:30	Apache-2.0
+org.apache:apache:31	Apache-2.0
+org.apache:apache:4	The Apache Software License, Version 2.0
+org.apache:apache:5	The Apache Software License, Version 2.0
+org.apache:apache:6	The Apache Software License, Version 2.0
+org.apache:apache:9	The Apache Software License, Version 2.0
+org.apache.commons:commons-lang3:3.1	未声明
+org.apache.commons:commons-lang3:3.12.0	未声明
+org.apache.commons:commons-lang3:3.13.0	未声明
+org.apache.commons:commons-lang3:3.14.0	未声明
+org.apache.commons:commons-lang3:3.7	未声明
+org.apache.commons:commons-lang3:3.8.1	未声明
+org.apache.commons:commons-parent:22	未声明
+org.apache.commons:commons-parent:34	未声明
+org.apache.commons:commons-parent:39	未声明
+org.apache.commons:commons-parent:42	未声明
+org.apache.commons:commons-parent:45	未声明
+org.apache.commons:commons-parent:47	未声明
+org.apache.commons:commons-parent:52	未声明
+org.apache.commons:commons-parent:58	未声明
+org.apache.commons:commons-parent:64	未声明
+org.apache.commons:commons-parent:69	未声明
+org.apache.commons:commons-parent:9	未声明
+org.apache.commons:commons-text:1.11.0	未声明
+org.apache.commons:commons-text:1.12.0	未声明
+org.apache.commons:commons-text:1.3	未声明
+org.apache.geronimo.genesis:genesis:2.0	The Apache Software License, Version 2.0
+org.apache.geronimo.genesis:genesis-default-flava:2.0	未声明
+org.apache.geronimo.genesis:genesis-java5-flava:2.0	未声明
+org.apache.httpcomponents:httpclient:4.5.13	未声明
+org.apache.httpcomponents:httpcomponents-client:4.5.13	Apache License, Version 2.0
+org.apache.httpcomponents:httpcomponents-core:4.4.13	Apache License, Version 2.0
+org.apache.httpcomponents:httpcomponents-core:4.4.14	Apache License, Version 2.0
+org.apache.httpcomponents:httpcomponents-parent:11	未声明
+org.apache.httpcomponents:httpcore:4.4.13	未声明
+org.apache.httpcomponents:httpcore:4.4.14	未声明
+org.apache.maven:maven:2.0.9	未声明
+org.apache.maven:maven:2.2.1	未声明
+org.apache.maven:maven:3.0	未声明
+org.apache.maven:maven:3.1.0	未声明
+org.apache.maven:maven:3.8.6	未声明
+org.apache.maven:maven-aether-provider:3.0	未声明
+org.apache.maven:maven-artifact:2.0.9	未声明
+org.apache.maven:maven-artifact:2.2.1	未声明
+org.apache.maven:maven-artifact:3.0	未声明
+org.apache.maven:maven-artifact:3.1.0	未声明
+org.apache.maven:maven-artifact:3.8.6	未声明
+org.apache.maven:maven-artifact-manager:2.0.9	未声明
+org.apache.maven:maven-artifact-manager:2.2.1	未声明
+org.apache.maven:maven-builder-support:3.8.6	未声明
+org.apache.maven:maven-core:2.0.9	未声明
+org.apache.maven:maven-core:2.2.1	未声明
+org.apache.maven:maven-core:3.0	未声明
+org.apache.maven:maven-core:3.8.6	未声明
+org.apache.maven:maven-error-diagnostics:2.0.9	未声明
+org.apache.maven:maven-error-diagnostics:2.2.1	未声明
+org.apache.maven:maven-model:2.0.9	未声明
+org.apache.maven:maven-model:2.2.1	未声明
+org.apache.maven:maven-model:3.0	未声明
+org.apache.maven:maven-model:3.1.0	未声明
+org.apache.maven:maven-model:3.8.6	未声明
+org.apache.maven:maven-model-builder:3.0	未声明
+org.apache.maven:maven-model-builder:3.8.6	未声明
+org.apache.maven:maven-monitor:2.0.9	未声明
+org.apache.maven:maven-monitor:2.2.1	未声明
+org.apache.maven:maven-parent:11	未声明
+org.apache.maven:maven-parent:13	未声明
+org.apache.maven:maven-parent:15	未声明
+org.apache.maven:maven-parent:21	未声明
+org.apache.maven:maven-parent:22	未声明
+org.apache.maven:maven-parent:23	未声明
+org.apache.maven:maven-parent:30	未声明
+org.apache.maven:maven-parent:33	未声明
+org.apache.maven:maven-parent:34	未声明
+org.apache.maven:maven-parent:35	未声明
+org.apache.maven:maven-parent:39	未声明
+org.apache.maven:maven-parent:41	未声明
+org.apache.maven:maven-parent:8	未声明
+org.apache.maven:maven-plugin-api:2.0.9	未声明
+org.apache.maven:maven-plugin-api:2.2.1	未声明
+org.apache.maven:maven-plugin-api:3.0	未声明
+org.apache.maven:maven-plugin-api:3.1.0	未声明
+org.apache.maven:maven-plugin-api:3.8.6	未声明
+org.apache.maven:maven-plugin-descriptor:2.0.9	未声明
+org.apache.maven:maven-plugin-descriptor:2.2.1	未声明
+org.apache.maven:maven-plugin-parameter-documenter:2.0.9	未声明
+org.apache.maven:maven-plugin-parameter-documenter:2.2.1	未声明
+org.apache.maven:maven-plugin-registry:2.0.9	未声明
+org.apache.maven:maven-plugin-registry:2.2.1	未声明
+org.apache.maven:maven-profile:2.0.9	未声明
+org.apache.maven:maven-profile:2.2.1	未声明
+org.apache.maven:maven-project:2.0.9	未声明
+org.apache.maven:maven-project:2.2.1	未声明
+org.apache.maven:maven-repository-metadata:2.0.9	未声明
+org.apache.maven:maven-repository-metadata:2.2.1	未声明
+org.apache.maven:maven-repository-metadata:3.0	未声明
+org.apache.maven:maven-repository-metadata:3.8.6	未声明
+org.apache.maven:maven-resolver-provider:3.8.6	未声明
+org.apache.maven:maven-settings:2.0.9	未声明
+org.apache.maven:maven-settings:2.2.1	未声明
+org.apache.maven:maven-settings:3.0	未声明
+org.apache.maven:maven-settings:3.8.6	未声明
+org.apache.maven:maven-settings-builder:3.0	未声明
+org.apache.maven:maven-settings-builder:3.8.6	未声明
+org.apache.maven:maven-toolchain:2.0.9	未声明
+org.apache.maven.doxia:doxia:1.11.1	未声明
+org.apache.maven.doxia:doxia-core:1.11.1	未声明
+org.apache.maven.doxia:doxia-decoration-model:1.11.1	未声明
+org.apache.maven.doxia:doxia-logging-api:1.11.1	未声明
+org.apache.maven.doxia:doxia-module-xhtml:1.11.1	未声明
+org.apache.maven.doxia:doxia-module-xhtml5:1.11.1	未声明
+org.apache.maven.doxia:doxia-modules:1.11.1	未声明
+org.apache.maven.doxia:doxia-sink-api:1.11.1	未声明
+org.apache.maven.doxia:doxia-site-renderer:1.11.1	未声明
+org.apache.maven.doxia:doxia-sitetools:1.11.1	未声明
+org.apache.maven.doxia:doxia-skin-model:1.11.1	未声明
+org.apache.maven.plugin-tools:maven-plugin-annotations:3.1	未声明
+org.apache.maven.plugin-tools:maven-plugin-tools:3.1	未声明
+org.apache.maven.plugins:maven-clean-plugin:3.2.0	未声明
+org.apache.maven.plugins:maven-compiler-plugin:3.8.1	未声明
+org.apache.maven.plugins:maven-plugins:33	未声明
+org.apache.maven.plugins:maven-plugins:35	未声明
+org.apache.maven.plugins:maven-plugins:39	未声明
+org.apache.maven.plugins:maven-resources-plugin:3.3.1	未声明
+org.apache.maven.plugins:maven-surefire-plugin:2.12.4	未声明
+org.apache.maven.reporting:maven-reporting:2.0.9	未声明
+org.apache.maven.reporting:maven-reporting-api:2.0.9	未声明
+org.apache.maven.reporting:maven-reporting-api:3.1.0	未声明
+org.apache.maven.reporting:maven-reporting-impl:3.1.0	未声明
+org.apache.maven.resolver:maven-resolver:1.6.3	未声明
+org.apache.maven.resolver:maven-resolver-api:1.6.3	未声明
+org.apache.maven.resolver:maven-resolver-impl:1.6.3	未声明
+org.apache.maven.resolver:maven-resolver-spi:1.6.3	未声明
+org.apache.maven.resolver:maven-resolver-util:1.6.3	未声明
+org.apache.maven.scm:maven-scm:2.1.0	未声明
+org.apache.maven.scm:maven-scm-api:2.1.0	未声明
+org.apache.maven.scm:maven-scm-manager-plexus:2.1.0	未声明
+org.apache.maven.scm:maven-scm-managers:2.1.0	未声明
+org.apache.maven.scm:maven-scm-provider-git-commons:2.1.0	未声明
+org.apache.maven.scm:maven-scm-provider-gitexe:2.1.0	未声明
+org.apache.maven.scm:maven-scm-provider-hg:2.1.0	未声明
+org.apache.maven.scm:maven-scm-provider-jgit:2.1.0	未声明
+org.apache.maven.scm:maven-scm-provider-svn-commons:2.1.0	未声明
+org.apache.maven.scm:maven-scm-provider-svnexe:2.1.0	未声明
+org.apache.maven.scm:maven-scm-providers:2.1.0	未声明
+org.apache.maven.scm:maven-scm-providers-git:2.1.0	未声明
+org.apache.maven.scm:maven-scm-providers-standard:2.1.0	未声明
+org.apache.maven.scm:maven-scm-providers-svn:2.1.0	未声明
+org.apache.maven.shared:maven-common-artifact-filters:1.3	未声明
+org.apache.maven.shared:maven-common-artifact-filters:3.1.1	未声明
+org.apache.maven.shared:maven-filtering:3.3.1	未声明
+org.apache.maven.shared:maven-shared-components:12	未声明
+org.apache.maven.shared:maven-shared-components:18	未声明
+org.apache.maven.shared:maven-shared-components:19	未声明
+org.apache.maven.shared:maven-shared-components:30	未声明
+org.apache.maven.shared:maven-shared-components:34	未声明
+org.apache.maven.shared:maven-shared-components:39	未声明
+org.apache.maven.shared:maven-shared-incremental:1.1	未声明
+org.apache.maven.shared:maven-shared-utils:0.1	未声明
+org.apache.maven.shared:maven-shared-utils:3.2.1	未声明
+org.apache.maven.shared:maven-shared-utils:3.3.3	未声明
+org.apache.maven.shared:maven-shared-utils:3.3.4	未声明
+org.apache.maven.surefire:maven-surefire-common:2.12.4	未声明
+org.apache.maven.surefire:maven-surefire-common:3.2.5	未声明
+org.apache.maven.surefire:surefire:2.12.4	未声明
+org.apache.maven.surefire:surefire:3.2.5	未声明
+org.apache.maven.surefire:surefire-api:2.12.4	未声明
+org.apache.maven.surefire:surefire-api:3.2.5	未声明
+org.apache.maven.surefire:surefire-booter:2.12.4	未声明
+org.apache.maven.surefire:surefire-booter:3.2.5	未声明
+org.apache.maven.surefire:surefire-extensions-api:3.2.5	未声明
+org.apache.maven.surefire:surefire-extensions-spi:3.2.5	未声明
+org.apache.maven.surefire:surefire-junit4:2.12.4	未声明
+org.apache.maven.surefire:surefire-logger-api:3.2.5	未声明
+org.apache.maven.surefire:surefire-providers:2.12.4	未声明
+org.apache.maven.surefire:surefire-shared-utils:3.2.5	The Apache Software License, Version 2.0
+org.apache.sshd:sshd:2.7.0	Apache 2.0 License
+org.apache.sshd:sshd-common:2.7.0	未声明
+org.apache.sshd:sshd-core:2.7.0	未声明
+org.apache.sshd:sshd-osgi:2.7.0	未声明
+org.apache.sshd:sshd-sftp:2.7.0	未声明
+org.apache.velocity:velocity:1.6.2	未声明
+org.apache.velocity:velocity:1.7	未声明
+org.apache.velocity:velocity-tools:2.0	The Apache Software License, Version 2.0
+org.apache.xbean:xbean:3.7	未声明
+org.apache.xbean:xbean-reflect:3.7	未声明
+org.checkerframework:checker-compat-qual:2.0.0	GNU General Public License, version 2 (GPL2), with the classpath exception; The MIT License
+org.codehaus:codehaus-parent:4	未声明
+org.codehaus.mojo:animal-sniffer-annotations:1.14	未声明
+org.codehaus.mojo:animal-sniffer-parent:1.14	MIT license
+org.codehaus.mojo:mojo-parent:34	未声明
+org.codehaus.plexus:plexus:1.0.10	未声明
+org.codehaus.plexus:plexus:1.0.11	The Apache Software License, Version 2.0
+org.codehaus.plexus:plexus:1.0.4	未声明
+org.codehaus.plexus:plexus:10	Apache License, Version 2.0
+org.codehaus.plexus:plexus:13	Apache License, Version 2.0
+org.codehaus.plexus:plexus:15	Apache License, Version 2.0
+org.codehaus.plexus:plexus:16	Apache License, Version 2.0
+org.codehaus.plexus:plexus:2.0.2	The Apache Software License, Version 2.0
+org.codehaus.plexus:plexus:2.0.6	The Apache Software License, Version 2.0
+org.codehaus.plexus:plexus:2.0.7	The Apache Software License, Version 2.0
+org.codehaus.plexus:plexus:3.2	The Apache Software License, Version 2.0
+org.codehaus.plexus:plexus:3.3	The Apache Software License, Version 2.0
+org.codehaus.plexus:plexus:3.3.1	The Apache Software License, Version 2.0
+org.codehaus.plexus:plexus:4.0	Apache License, Version 2.0
+org.codehaus.plexus:plexus:5.1	Apache License, Version 2.0
+org.codehaus.plexus:plexus:8	Apache License, Version 2.0
+org.codehaus.plexus:plexus-cipher:2.0	未声明
+org.codehaus.plexus:plexus-classworlds:1.2-alpha-9	未声明
+org.codehaus.plexus:plexus-classworlds:2.2.3	未声明
+org.codehaus.plexus:plexus-classworlds:2.4	未声明
+org.codehaus.plexus:plexus-classworlds:2.5.2	未声明
+org.codehaus.plexus:plexus-classworlds:2.6.0	未声明
+org.codehaus.plexus:plexus-compiler:2.8.4	未声明
+org.codehaus.plexus:plexus-compiler-api:2.8.4	未声明
+org.codehaus.plexus:plexus-compiler-javac:2.8.4	未声明
+org.codehaus.plexus:plexus-compiler-manager:2.8.4	未声明
+org.codehaus.plexus:plexus-compilers:2.8.4	未声明
+org.codehaus.plexus:plexus-component-annotations:1.5.5	未声明
+org.codehaus.plexus:plexus-component-annotations:1.7.1	未声明
+org.codehaus.plexus:plexus-component-annotations:2.0.0	未声明
+org.codehaus.plexus:plexus-component-annotations:2.1.0	未声明
+org.codehaus.plexus:plexus-components:1.1.12	未声明
+org.codehaus.plexus:plexus-components:1.1.14	未声明
+org.codehaus.plexus:plexus-components:1.1.18	未声明
+org.codehaus.plexus:plexus-components:1.3.1	未声明
+org.codehaus.plexus:plexus-components:4.0	未声明
+org.codehaus.plexus:plexus-container-default:1.0-alpha-30	未声明
+org.codehaus.plexus:plexus-container-default:1.0-alpha-9	未声明
+org.codehaus.plexus:plexus-container-default:1.0-alpha-9-stable-1	未声明
+org.codehaus.plexus:plexus-container-default:2.1.0	未声明
+org.codehaus.plexus:plexus-containers:1.0-alpha-30	未声明
+org.codehaus.plexus:plexus-containers:1.0.3	未声明
+org.codehaus.plexus:plexus-containers:1.5.5	未声明
+org.codehaus.plexus:plexus-containers:1.7.1	未声明
+org.codehaus.plexus:plexus-containers:2.0.0	未声明
+org.codehaus.plexus:plexus-containers:2.1.0	未声明
+org.codehaus.plexus:plexus-i18n:1.0-beta-10	未声明
+org.codehaus.plexus:plexus-interactivity:1.3	未声明
+org.codehaus.plexus:plexus-interactivity-api:1.3	未声明
+org.codehaus.plexus:plexus-interpolation:1.11	未声明
+org.codehaus.plexus:plexus-interpolation:1.14	未声明
+org.codehaus.plexus:plexus-interpolation:1.21	未声明
+org.codehaus.plexus:plexus-interpolation:1.26	未声明
+org.codehaus.plexus:plexus-java:0.9.10	未声明
+org.codehaus.plexus:plexus-java:1.2.0	未声明
+org.codehaus.plexus:plexus-languages:0.9.10	未声明
+org.codehaus.plexus:plexus-languages:1.2.0	未声明
+org.codehaus.plexus:plexus-sec-dispatcher:2.0	未声明
+org.codehaus.plexus:plexus-utils:1.0.4	未声明
+org.codehaus.plexus:plexus-utils:1.4.5	未声明
+org.codehaus.plexus:plexus-utils:1.5.15	未声明
+org.codehaus.plexus:plexus-utils:1.5.5	未声明
+org.codehaus.plexus:plexus-utils:2.0.4	未声明
+org.codehaus.plexus:plexus-utils:2.0.5	未声明
+org.codehaus.plexus:plexus-utils:2.1	未声明
+org.codehaus.plexus:plexus-utils:3.0.10	未声明
+org.codehaus.plexus:plexus-utils:3.0.22	未声明
+org.codehaus.plexus:plexus-utils:3.0.24	未声明
+org.codehaus.plexus:plexus-utils:3.0.8	未声明
+org.codehaus.plexus:plexus-utils:3.1.1	未声明
+org.codehaus.plexus:plexus-utils:3.3.0	未声明
+org.codehaus.plexus:plexus-utils:3.3.1	未声明
+org.codehaus.plexus:plexus-utils:3.4.1	未声明
+org.codehaus.plexus:plexus-utils:3.5.0	未声明
+org.codehaus.plexus:plexus-utils:3.5.1	未声明
+org.codehaus.plexus:plexus-utils:4.0.0	未声明
+org.codehaus.plexus:plexus-velocity:1.2	未声明
+org.codehaus.plexus:plexus-xml:3.0.0	未声明
+org.codehaus.woodstox:stax2-api:4.2.2	The BSD 2-Clause License
+org.eclipse.aether:aether:1.0.0.v20140518	Eclipse Public License, Version 1.0
+org.eclipse.aether:aether-api:1.0.0.v20140518	未声明
+org.eclipse.aether:aether-util:1.0.0.v20140518	未声明
+org.eclipse.jgit:org.eclipse.jgit:5.13.3.202401111512-r	未声明
+org.eclipse.jgit:org.eclipse.jgit-parent:5.13.3.202401111512-r	Eclipse Distribution License (New BSD License)
+org.eclipse.jgit:org.eclipse.jgit.ssh.apache:5.13.3.202401111512-r	未声明
+org.eclipse.sisu:org.eclipse.sisu.inject:0.0.0.M2a	未声明
+org.eclipse.sisu:org.eclipse.sisu.inject:0.3.5	未声明
+org.eclipse.sisu:org.eclipse.sisu.plexus:0.0.0.M2a	未声明
+org.eclipse.sisu:org.eclipse.sisu.plexus:0.3.5	未声明
+org.eclipse.sisu:sisu-inject:0.0.0.M2a	Eclipse Public License, Version 1.0
+org.eclipse.sisu:sisu-inject:0.3.5	Eclipse Public License, Version 1.0
+org.eclipse.sisu:sisu-plexus:0.0.0.M2a	Eclipse Public License, Version 1.0
+org.eclipse.sisu:sisu-plexus:0.3.5	Eclipse Public License, Version 1.0
+org.hamcrest:hamcrest-core:1.3	未声明
+org.hamcrest:hamcrest-parent:1.3	New BSD License
+org.jboss.weld:weld-api-bom:1.0	Apache License, Version 2.0
+org.jboss.weld:weld-api-parent:1.0	Apache License, Version 2.0
+org.jboss.weld:weld-parent:6	Apache License, Version 2.0
+org.junit:junit-bom:5.10.0	Eclipse Public License v2.0
+org.junit:junit-bom:5.10.1	Eclipse Public License v2.0
+org.junit:junit-bom:5.10.2	Eclipse Public License v2.0
+org.junit:junit-bom:5.7.1	Eclipse Public License v2.0
+org.junit:junit-bom:5.7.2	Eclipse Public License v2.0
+org.junit:junit-bom:5.9.3	Eclipse Public License v2.0
+org.ow2:ow2:1.5	The Apache Software License, Version 2.0
+org.ow2:ow2:1.5.1	The Apache Software License, Version 2.0
+org.ow2.asm:asm:6.2	BSD
+org.ow2.asm:asm:9.6	BSD-3-Clause
+org.ow2.asm:asm:9.7.1	BSD-3-Clause
+org.ow2.asm:asm-analysis:9.7.1	BSD-3-Clause
+org.ow2.asm:asm-commons:9.7.1	BSD-3-Clause
+org.ow2.asm:asm-tree:9.7.1	BSD-3-Clause
+org.ow2.asm:asm-util:9.7.1	BSD-3-Clause
+org.pitest:pitest:1.17.4	The Apache Software License, Version 2.0
+org.pitest:pitest-aggregator:1.17.4	The Apache Software License, Version 2.0
+org.pitest:pitest-command-line:1.17.4	The Apache Software License, Version 2.0
+org.pitest:pitest-entry:1.17.4	The Apache Software License, Version 2.0
+org.pitest:pitest-html-report:1.17.4	The Apache Software License, Version 2.0
+org.pitest:pitest-maven:1.17.4	The Apache Software License, Version 2.0
+org.pitest:pitest-parent:1.17.4	The Apache Software License, Version 2.0
+org.slf4j:jcl-over-slf4j:1.5.6	未声明
+org.slf4j:jcl-over-slf4j:1.7.30	Apache License, Version 2.0
+org.slf4j:jcl-over-slf4j:1.7.36	Apache License, Version 2.0
+org.slf4j:jul-to-slf4j:1.7.12	未声明
+org.slf4j:slf4j-api:1.5.6	未声明
+org.slf4j:slf4j-api:1.6.0	未声明
+org.slf4j:slf4j-api:1.7.12	未声明
+org.slf4j:slf4j-api:1.7.30	未声明
+org.slf4j:slf4j-api:1.7.36	未声明
+org.slf4j:slf4j-jdk14:1.5.6	未声明
+org.slf4j:slf4j-parent:1.5.6	未声明
+org.slf4j:slf4j-parent:1.6.0	MIT License
+org.slf4j:slf4j-parent:1.7.12	MIT License
+org.slf4j:slf4j-parent:1.7.30	MIT License
+org.slf4j:slf4j-parent:1.7.36	MIT License
+org.sonatype.aether:aether-api:1.7	未声明
+org.sonatype.aether:aether-impl:1.7	未声明
+org.sonatype.aether:aether-parent:1.7	The Apache Software License, Version 2.0
+org.sonatype.aether:aether-spi:1.7	未声明
+org.sonatype.aether:aether-util:1.7	未声明
+org.sonatype.forge:forge-parent:10	未声明
+org.sonatype.forge:forge-parent:4	未声明
+org.sonatype.forge:forge-parent:5	未声明
+org.sonatype.forge:forge-parent:6	未声明
+org.sonatype.oss:oss-parent:5	未声明
+org.sonatype.oss:oss-parent:7	未声明
+org.sonatype.oss:oss-parent:9	未声明
+org.sonatype.plexus:plexus-build-api:0.0.7	未声明
+org.sonatype.plexus:plexus-cipher:1.4	未声明
+org.sonatype.plexus:plexus-sec-dispatcher:1.3	未声明
+org.sonatype.sisu:sisu-guice:2.1.7	The Apache Software License, Version 2.0
+org.sonatype.sisu:sisu-guice:3.1.0	未声明
+org.sonatype.sisu:sisu-inject:1.4.2	未声明
+org.sonatype.sisu:sisu-inject-bean:1.4.2	未声明
+org.sonatype.sisu:sisu-inject-plexus:1.4.2	未声明
+org.sonatype.sisu:sisu-parent:1.4.2	The Apache Software License, Version 2.0
+org.sonatype.sisu.inject:guice-bean:1.4.2	未声明
+org.sonatype.sisu.inject:guice-parent:3.1.0	The Apache Software License, Version 2.0
+org.sonatype.sisu.inject:guice-plexus:1.4.2	未声明
+org.sonatype.spice:spice-parent:12	Apache Public License 2.0
+org.sonatype.spice:spice-parent:15	Apache Public License 2.0
+org.sonatype.spice:spice-parent:16	Apache Public License 2.0
+org.sonatype.spice:spice-parent:17	Apache License, Version 2.0
+org.springframework:spring-framework-bom:5.3.6	Apache License, Version 2.0
+org.testcontainers:testcontainers-bom:1.15.2	MIT
+oro:oro:2.0.8	未声明
+uk.org.lidalia:sysout-over-slf4j:1.0.2	MIT X11 License
+xml-apis:xml-apis:1.0.b2	The Apache Software License, Version 2.0
+
+========================================================================
+License tally (an artifact with multiple declared licenses is
+counted once under each of its license names):
+  56	The Apache Software License, Version 2.0
+  25	Apache License, Version 2.0
+  6	Eclipse Public License v2.0
+  6	BSD-3-Clause
+  5	Eclipse Public License, Version 1.0
+  4	MIT License
+  3	Apache-2.0
+  3	Apache Public License 2.0
+  2	Public Domain
+  2	BSD
+  2	Apache 2.0
+  2	The MIT License
+  1	BSD License
+  1	The Apache License, Version 2.0
+  1	Apache 2
+  1	CDDL + GPLv2 with classpath exception
+  1	COMMON DEVELOPMENT AND DISTRIBUTION LICENSE (CDDL) Version 1.0
+  1	Common Public License Version 1.0
+  1	Eclipse Public License 1.0
+  1	CC0 1.0 Universal
+  1	BSD licence
+  1	Apache 2.0 License
+  1	GNU General Public License, version 2 (GPL2), with the classpath exception
+  1	MIT license
+  1	The BSD 2-Clause License
+  1	Eclipse Distribution License (New BSD License)
+  1	New BSD License
+  1	MIT
+  1	MIT X11 License
+  311	未声明 (no license declared in POM)

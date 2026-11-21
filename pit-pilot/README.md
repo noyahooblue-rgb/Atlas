@@ -260,7 +260,8 @@ org.pitest.mutationtest.commandline.MutationCoverageReport \
 - **文件总数：611 个**（jar 168 个、pom 443 个；pom 多是因为每个依赖的 POM 和父 POM 离线时都要在本地，Maven 读描述符要用）
 - **总大小：47,034,466 字节 ≈ 44.9 MiB**
 - 完整清单在 **`offline-manifest.tsv`**（每行一个文件：仓库相对路径、groupId、artifactId、version、类型、字节数），本文末尾附录有同一份表格。
-- 用收集脚本打成的 zip：**39,571,040 字节 ≈ 37.7 MiB**，sha256 `8acb34a68df2dd1611efd0086e0c6e8b2c09eba5f6ac82bc9262cd0a2186159c`（该 zip 是在试点机器上生成的留存件；按交付约定不随仓库分发，用下面的脚本在目标机器上重建即可，内容以清单为准）。
+- 用收集脚本打成的 zip：611 个仓库文件打包后 **39,571,040 字节 ≈ 37.7 MiB**；zip 根目录另含一份 **`THIRD-PARTY-NOTICES.txt`**（按清单逐个构件列出许可证名称，取自各构件 POM 自带的 licenses 字段；443 个构件中 132 个有声明——以 Apache License 2.0 的各种写法居多，余为 EPL/BSD/MIT/CDDL 等可再分发许可证——311 个的 POM 本身未声明许可证，清单中如实标「未声明」，未做推断），含该文件后 zip 为 **39,575,278 字节**，sha256 为 `b444cc3d57e84c81361239ea5b286ae581027a3de8cca7eefd4d0c6c629bd7a2`（2026-11-22 按清单重建实测）。注意 zip 的 sha256 每次重建都会变（zip 容器内嵌文件时间戳），**内容**以清单为准：611 个文件逐个的 sha256 在随包的 `sha256sums.txt` 里，可逐项核对。
+- **GitHub Release：本次未能建立。** 原因：执行机器上没有对 `noyahooblue-rgb/Atlas` 仓库有权限的 GitHub API 凭据（`gh` 未登录；已有的 API 令牌只对另一个仓库只读），无法通过 API 建 Release 传附件。zip 与 `sha256sums.txt` 已在执行机器上重建备好；拿不到现成下载时，按下面「没有 Release 时的最短重建步骤」在自己电脑上重建即可。
 
 ### 怎么收集（在有完整本地仓库的机器上）
 
@@ -273,7 +274,53 @@ cd pit-pilot
 # offline-package/sha256sums.txt（每个文件的 sha256 + zip 的 sha256）
 ```
 
-脚本按 `offline-manifest.tsv` 逐个文件从源仓库拷出，缺任何一个都会报错退出，不会打出残缺包。脚本在 Linux bash 上实测通过；Windows 上可用 Git Bash / WSL 运行（**未验证**于原生 Windows 环境）。
+脚本按 `offline-manifest.tsv` 逐个文件从源仓库拷出，缺任何一个都会报错退出，不会打出残缺包。拷贝时还会把每个文件的实际字节数与清单第 6 列比对：大小对不上的文件同样记为错误（输出 `SIZE MISMATCH: <路径> (manifest: N bytes, actual: M bytes)`），和缺文件一样导致整体失败退出、不生成 zip。脚本在 Linux bash 上实测通过；Windows 上可用 Git Bash / WSL 运行（**未验证**于原生 Windows 环境）。
+
+**复现大小校验（实测）**：把源仓库复制一份，故意改坏一个文件再跑脚本，应看到报错并以退出码 1 结束；恢复后重跑即成功。
+
+```bash
+cp -r <源本地仓库> /tmp/repo-copy
+printf 'x' >> /tmp/repo-copy/antlr/antlr/2.7.7/antlr-2.7.7.jar   # 故意多写 1 字节
+./collect-offline-package.sh /tmp/repo-copy /tmp/out-bad
+# 期望：SIZE MISMATCH: antlr/antlr/2.7.7/antlr-2.7.7.jar (manifest: 445288 bytes, actual: 445289 bytes)
+#       ERROR: 0 manifest file(s) missing, 1 file(s) with wrong size; package not built（退出码 1，无 zip 生成）
+```
+
+### 先核对 sha256 再解压（内网引入时）
+
+拿到 zip 后**先核对再解压**：把算出的 sha256 与上文记录的值（或发布方另行给出的值）逐字比对，一致才解压。
+
+```bash
+# Linux / Git Bash / WSL：
+sha256sum pit-offline-repo.zip
+# Windows PowerShell：
+Get-FileHash .\pit-offline-repo.zip -Algorithm SHA256
+# Windows cmd：
+certutil -hashfile pit-offline-repo.zip SHA256
+```
+
+解压后如需逐文件核对：随包的 `sha256sums.txt` 里有 `repo/` 内全部 611 个文件各自的 sha256（最后一行是 zip 本身的大小与 sha256）。
+
+### 没有 Release 时的最短重建步骤（在自己联网的电脑上）
+
+需要装：Git（Windows 装 Git for Windows，自带 Git Bash）、一个 JDK（8 或以上均可，这里只用它跑 Maven 的下载）、Maven 3。然后在 Git Bash / 终端里：
+
+```bash
+git clone -b pit-pilot https://github.com/noyahooblue-rgb/Atlas.git
+cd Atlas/pit-pilot
+# 1) 按清单从 Maven 中央仓库把 611 个文件下到本地仓库（路径即清单路径）
+while IFS=$'\t' read -r rel _g _a _v _t _s _r; do
+  case "$rel" in ''|'#'*) continue ;; esac
+  mkdir -p "$HOME/.m2/repository/$(dirname "$rel")"
+  curl -fL "https://repo1.maven.org/maven2/$rel" -o "$HOME/.m2/repository/$rel"
+done < offline-manifest.tsv
+# 2) 收集打包（脚本会逐文件校验大小，缺失或大小不符直接失败退出）
+./collect-offline-package.sh
+# 产出在 ./offline-package/：pit-offline-repo.zip 与 sha256sums.txt
+# 3) 把许可证清单放进 zip 根目录（文件已随仓库分发，就是本目录的 THIRD-PARTY-NOTICES.txt）
+(cd offline-package && zip -j pit-offline-repo.zip ../THIRD-PARTY-NOTICES.txt)
+sha256sum offline-package/pit-offline-repo.zip   # 记下这个值，带进内网后按上一节核对
+```
 
 ### 怎么离线用（在内网机器上）
 

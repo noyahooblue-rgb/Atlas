@@ -3,7 +3,10 @@
 # collect-offline-package.sh
 #
 # Collects every file listed in offline-manifest.tsv from a local
-# Maven repository into a self-contained offline package:
+# Maven repository into a self-contained offline package. Each file's
+# actual byte size is verified against column 6 of the manifest while
+# copying; a size mismatch is an error, just like a missing file, and
+# makes the script fail without building a package:
 #
 #   <OUTPUT_DIR>/
 #     repo/                 a local-repository directory holding
@@ -52,6 +55,7 @@ mkdir -p "$REPO_OUT"
 count=0
 total=0
 missing=0
+badsize=0
 while IFS=$'\t' read -r relpath _group _artifact _version _type size _rest; do
   case "$relpath" in
     ''|'#'*) continue ;;
@@ -62,14 +66,20 @@ while IFS=$'\t' read -r relpath _group _artifact _version _type size _rest; do
     missing=$((missing + 1))
     continue
   fi
+  actual_size=$(stat -c%s "$src")
+  if [[ "$actual_size" != "$size" ]]; then
+    echo "SIZE MISMATCH: $relpath (manifest: $size bytes, actual: $actual_size bytes)" >&2
+    badsize=$((badsize + 1))
+    continue
+  fi
   mkdir -p "$REPO_OUT/$(dirname "$relpath")"
   cp -p "$src" "$REPO_OUT/$relpath"
   count=$((count + 1))
   total=$((total + size))
 done < "$MANIFEST"
 
-if [[ "$missing" -gt 0 ]]; then
-  echo "ERROR: $missing manifest file(s) missing from source repository" >&2
+if [[ "$missing" -gt 0 || "$badsize" -gt 0 ]]; then
+  echo "ERROR: $missing manifest file(s) missing, $badsize file(s) with wrong size; package not built" >&2
   exit 1
 fi
 
